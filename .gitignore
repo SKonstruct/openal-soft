@@ -13,3 +13,4 @@ CMakeLists.txt.user*
 .idea
 
 __pycache__/
+/fmt-11.2.0
