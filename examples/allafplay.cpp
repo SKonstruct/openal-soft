@@ -58,7 +58,6 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <fstream>
 #include <functional>
 #include <iostream>
 #include <iterator>
@@ -74,24 +73,27 @@
 #include <variant>
 #include <vector>
 #ifdef _WIN32
+#if defined(_MSVC_STL_UPDATE) && __has_include(<xfilesystem_abi.h>)
+#include <xfilesystem_abi.h> // HACK: For MSVC?
+#endif
 #include <io.h>
 #include <fcntl.h>
 #endif
 
 #include "alnumeric.h"
-#include "alstring.h"
-#include "altypes.hpp"
-#include "common/alhelpers.hpp"
-#include "filesystem.h"
-#include "fmt/base.h"
-#include "fmt/ostream.h"
-#include "fmt/std.h"
+#include "zudl.hpp"
 
 #include "win_main_utf8.h"
 
 #if HAVE_CXXMODULES
+import alhelpers;
+import alstring;
+import filesystem;
+import fmtlib;
 import gsl;
 import openal;
+import types;
+import zstring_view;
 
 #else
 
@@ -99,6 +101,14 @@ import openal;
 #include "AL/al.h"
 #include "AL/alext.h"
 
+#include "alformatzsv.hpp"
+#include "alformattypes.hpp"
+#include "alstring.h"
+#include "common/alhelpers.hpp"
+#include "filesystem.h"
+#include "fmt/base.h"
+#include "fmt/ostream.h"
+#include "fmt/std.h"
 #include "gsl/gsl"
 #endif
 
@@ -316,7 +326,7 @@ struct Channel {
 };
 
 struct LafStream {
-    std::ifstream mInFile;
+    fs::ifstream mInFile;
 
     Quality mQuality{};
     Mode mMode{};
@@ -367,8 +377,8 @@ auto LafStream::readChunk() -> u32
          * more to give.
          */
         if(mSampleCount < ~0_u64 || infile.gcount() != 0)
-            fmt::println(std::cerr, "Premature end of file ({} of {} samples)",
-                mCurrentSample.c_val, mSampleCount.c_val);
+            fmt::println(std::cerr, "Premature end of file ({} of {} samples)", mCurrentSample,
+                mSampleCount);
         mSampleCount = mCurrentSample;
         return 0_u32;
     }
@@ -398,14 +408,15 @@ auto LafStream::readChunk() -> u32
         * mNumEnabled).c_val);
     if(!infile.read(mSampleChunk.data(), toread)) [[unlikely]]
     {
-        const auto framesize = BytesFromQuality(mQuality).as<u64>() * mNumEnabled;
+        const auto framesize = BytesFromQuality(mQuality) * mNumEnabled;
         const auto samplesread = i64{infile.gcount()}.saturate_as<u64>() / framesize;
         mCurrentSample += samplesread;
         if(mSampleCount < ~0_u64)
-            fmt::println(std::cerr, "Premature end of file ({} of {} samples)",
-                mCurrentSample.c_val, mSampleCount.c_val);
+            fmt::println(std::cerr, "Premature end of file ({} of {} samples)", mCurrentSample,
+                mSampleCount);
         mSampleCount = mCurrentSample;
-        std::ranges::fill(mSampleChunk | std::views::drop((numsamples*framesize).c_val), char{});
+        auto const byteoffset = (numsamples * framesize).cast_to<isize>();
+        std::ranges::fill(mSampleChunk | std::views::drop(byteoffset.c_val), char{});
         return samplesread.cast_to<u32>();
     }
     std::ranges::fill(mSampleChunk | std::views::drop(toread), char{});
@@ -580,12 +591,12 @@ auto LoadLAF(const fs::path &fname) -> std::unique_ptr<LafStream>
     fmt::println("Filename: {}", al::u8_as_char(fname.u8string()));
     fmt::println(" quality: {}", GetQualityName(laf->mQuality));
     fmt::println(" mode: {}", GetModeName(laf->mMode));
-    fmt::println(" track count: {}", laf->mNumTracks.c_val);
+    fmt::println(" track count: {}", laf->mNumTracks);
 
     if(laf->mNumTracks == 0)
         throw std::runtime_error{"No tracks"};
     if(laf->mNumTracks > 256)
-        throw std::runtime_error{fmt::format("Too many tracks: {}", laf->mNumTracks.c_val)};
+        throw std::runtime_error{fmt::format("Too many tracks: {}", laf->mNumTracks)};
 
     auto chandata = std::vector<char>(laf->mNumTracks.c_val*9_uz);
     infile.read(chandata.data(), std::ssize(chandata));
@@ -597,15 +608,15 @@ auto LoadLAF(const fs::path &fname) -> std::unique_ptr<LafStream>
         if(laf->mNumTracks < 2)
             throw std::runtime_error{"Not enough tracks"};
 
-        auto numchans = laf->mNumTracks.as<usize>().c_val - 1;
-        auto numpostracks = 1_uz;
+        auto numchans = laf->mNumTracks.as<usize>() - 1u;
+        auto numpostracks = 1_usize;
         while(numpostracks*16 < numchans)
         {
             --numchans;
             ++numpostracks;
         }
-        laf->mChannels.resize(numchans);
-        laf->mPosTracks.resize(numpostracks);
+        laf->mChannels.resize(numchans.c_val);
+        laf->mPosTracks.resize(numpostracks.c_val);
     }
 
     static constexpr auto read_float = [](std::span<char,4> const input)
@@ -627,8 +638,7 @@ auto LoadLAF(const fs::path &fname) -> std::unique_ptr<LafStream>
         auto lfe_flag = int{chanspan[8]};
         chanspan = chanspan.subspan(9);
 
-        fmt::println("Track {}: E={:f}, A={:f} (LFE: {})", idx, x_axis.c_val, y_axis.c_val,
-            lfe_flag);
+        fmt::println("Track {}: E={:f}, A={:f} (LFE: {})", idx, x_axis, y_axis, lfe_flag);
         MyAssert(x_axis.isfinite() && y_axis.isfinite());
 
         auto channel = Channel{};
@@ -646,8 +656,7 @@ auto LoadLAF(const fs::path &fname) -> std::unique_ptr<LafStream>
         auto lfe_flag = int{chanspan[8]};
         chanspan = chanspan.subspan(9);
 
-        fmt::println("Track {}: E={:f}, A={:f} (LFE: {})", idx, x_axis.c_val, y_axis.c_val,
-            lfe_flag);
+        fmt::println("Track {}: E={:f}, A={:f} (LFE: {})", idx, x_axis, y_axis, lfe_flag);
         MyAssert(x_axis.isnan() && y_axis == 0.0f);
         MyAssert(idx != 0);
     });
@@ -674,10 +683,10 @@ auto LoadLAF(const fs::path &fname) -> std::unique_ptr<LafStream>
             | (u64{as_unsigned(input[4])}<<32) | (u64{as_unsigned(input[5])}<<40)
             | (u64{as_unsigned(input[6])}<<48) | (u64{as_unsigned(input[7])}<<56);
     });
-    fmt::println("Sample rate: {}", laf->mSampleRate.c_val);
+    fmt::println("Sample rate: {}", laf->mSampleRate);
     if(laf->mSampleCount < ~0_u64)
-        fmt::println("Length: {} samples ({:.2f} sec)", laf->mSampleCount.c_val,
-            (laf->mSampleCount.cast_to<f64>() / laf->mSampleRate.cast_to<f64>()).c_val);
+        fmt::println("Length: {} samples ({:.2f} sec)", laf->mSampleCount,
+            laf->mSampleCount.cast_to<f64>() / laf->mSampleRate.as<f64>());
     else
         fmt::println("Length: unbounded");
 
@@ -797,7 +806,7 @@ try {
             throw std::runtime_error{fmt::format("OpenAL error: {}", alGetString(err))};
     });
 
-    auto renderFile = std::ofstream{};
+    auto renderFile = fs::ofstream{};
     auto renderStart = std::streamoff{};
     auto leadIn = 0_isize;
     auto leadOut = 0_isize;
@@ -861,7 +870,7 @@ try {
             if(!alcResetDeviceSOFT(device, attribs.data()))
                 throw std::runtime_error{fmt::format(
                     "Failed to reset loopback device for {}hz rendering", RenderSampleRate)};
-            RenderSampleRate = laf->mSampleRate.reinterpret_as<i32>().c_val;
+            RenderSampleRate = laf->mSampleRate.cast_to<i32>().c_val;
         }
 
         if(alcIsExtensionPresent(device, "ALC_SOFT_device_clock"))
@@ -1011,7 +1020,7 @@ try {
                 auto const numsamples = laf->readChunk();
                 for(auto const i : std::views::iota(0_uz, laf->mChannels.size()))
                 {
-                    auto const samples = laf->prepareTrack(i, numsamples.c_val);
+                    auto const samples = laf->prepareTrack(i, numsamples.as<usize>());
                     laf->convertSamples(samples);
 
                     auto bufid = ALuint{};
@@ -1026,7 +1035,8 @@ try {
                     std::ranges::copy(laf->mPosTracks[i]|std::views::drop(laf->mSampleRate.c_val),
                         laf->mPosTracks[i].begin());
 
-                    std::ignore = laf->prepareTrack(laf->mChannels.size()+i, numsamples.c_val);
+                    std::ignore = laf->prepareTrack(laf->mChannels.size()+i,
+                        numsamples.as<usize>());
                     laf->convertPositions(std::span{laf->mPosTracks[i]}
                         .last(laf->mSampleRate.c_val));
                 }
@@ -1069,21 +1079,21 @@ try {
             auto numsamples = laf->readChunk();
             for(auto const i : std::views::iota(0_uz, laf->mChannels.size()))
             {
-                auto const samples = laf->prepareTrack(i, numsamples.c_val);
+                auto const samples = laf->prepareTrack(i, numsamples.as<usize>());
                 laf->convertSamples(samples);
                 alBufferData(laf->mChannels[i].mBuffers[0], laf->mALFormat, samples.data(),
                     gsl::narrow<ALsizei>(samples.size()), laf->mSampleRate.cast_to<i32>().c_val);
             }
             for(auto const i : std::views::iota(0_uz, laf->mPosTracks.size()))
             {
-                std::ignore = laf->prepareTrack(laf->mChannels.size()+i, numsamples.c_val);
+                std::ignore = laf->prepareTrack(laf->mChannels.size()+i, numsamples.as<usize>());
                 laf->convertPositions(std::span{laf->mPosTracks[i]}.first(laf->mSampleRate.c_val));
             }
 
             numsamples = laf->readChunk();
             for(auto const i : std::views::iota(0_uz, laf->mChannels.size()))
             {
-                auto const samples = laf->prepareTrack(i, numsamples.c_val);
+                auto const samples = laf->prepareTrack(i, numsamples.as<usize>());
                 laf->convertSamples(samples);
                 alBufferData(laf->mChannels[i].mBuffers[1], laf->mALFormat, samples.data(),
                     gsl::narrow<ALsizei>(samples.size()), laf->mSampleRate.cast_to<i32>().c_val);
@@ -1093,7 +1103,7 @@ try {
             }
             for(auto const i : std::views::iota(0_uz, laf->mPosTracks.size()))
             {
-                std::ignore = laf->prepareTrack(laf->mChannels.size()+i, numsamples.c_val);
+                std::ignore = laf->prepareTrack(laf->mChannels.size()+i, numsamples.as<usize>());
                 laf->convertPositions(std::span{laf->mPosTracks[i]}.last(laf->mSampleRate.c_val));
             }
 
@@ -1193,7 +1203,7 @@ catch(std::exception& e) {
     fmt::println(std::cerr, "Error playing {}:\n  {}", fname, e.what());
 }
 
-auto main(std::span<std::string_view> args) -> int
+auto main(std::span<al::zstring_view> args) -> int
 {
     /* Print out usage if no arguments were specified */
     if(args.size() < 2)
@@ -1236,47 +1246,47 @@ auto main(std::span<std::string_view> args) -> int
 
         RenderOutMode = ALC_ANY_SOFT;
         RenderAmbiOrder = 0;
-        if(al::case_compare(params[0], "mono") == 0)
+        if(is_eq(al::case_compare(params[0], "mono")))
             RenderChannels = ALC_MONO_SOFT;
-        else if(al::case_compare(params[0], "stereo") == 0)
+        else if(is_eq(al::case_compare(params[0], "stereo")))
         {
             RenderChannels = ALC_STEREO_SOFT;
             RenderOutMode = ALC_STEREO_BASIC_SOFT;
         }
-        else if(al::case_compare(params[0], "hrtf") == 0)
+        else if(is_eq(al::case_compare(params[0], "hrtf")))
         {
             RenderChannels = ALC_STEREO_SOFT;
             RenderOutMode = ALC_STEREO_HRTF_SOFT;
         }
-        else if(al::case_compare(params[0], "uhj") == 0)
+        else if(is_eq(al::case_compare(params[0], "uhj")))
         {
             RenderChannels = ALC_STEREO_SOFT;
             RenderOutMode = ALC_STEREO_UHJ_SOFT;
         }
-        else if(al::case_compare(params[0], "quad") == 0)
+        else if(is_eq(al::case_compare(params[0], "quad")))
             RenderChannels = ALC_QUAD_SOFT;
-        else if(al::case_compare(params[0], "surround51") == 0)
+        else if(is_eq(al::case_compare(params[0], "surround51")))
             RenderChannels = ALC_SURROUND_5_1_SOFT;
-        else if(al::case_compare(params[0], "surround61") == 0)
+        else if(is_eq(al::case_compare(params[0], "surround61")))
             RenderChannels = ALC_SURROUND_6_1_SOFT;
-        else if(al::case_compare(params[0], "surround71") == 0)
+        else if(is_eq(al::case_compare(params[0], "surround71")))
             RenderChannels = ALC_SURROUND_7_1_SOFT;
-        else if(al::case_compare(params[0], "ambi1") == 0)
+        else if(is_eq(al::case_compare(params[0], "ambi1")))
         {
             RenderChannels = ALC_BFORMAT3D_SOFT;
             RenderAmbiOrder = 1;
         }
-        else if(al::case_compare(params[0], "ambi2") == 0)
+        else if(is_eq(al::case_compare(params[0], "ambi2")))
         {
             RenderChannels = ALC_BFORMAT3D_SOFT;
             RenderAmbiOrder = 2;
         }
-        else if(al::case_compare(params[0], "ambi3") == 0)
+        else if(is_eq(al::case_compare(params[0], "ambi3")))
         {
             RenderChannels = ALC_BFORMAT3D_SOFT;
             RenderAmbiOrder = 3;
         }
-        else if(al::case_compare(params[0], "ambi4") == 0)
+        else if(is_eq(al::case_compare(params[0], "ambi4")))
         {
             RenderChannels = ALC_BFORMAT3D_SOFT;
             RenderAmbiOrder = 4;
@@ -1287,9 +1297,9 @@ auto main(std::span<std::string_view> args) -> int
             return 1;
         }
 
-        if(al::case_compare(params[1], "f32") == 0)
+        if(is_eq(al::case_compare(params[1], "f32")))
             RenderSamples = ALC_FLOAT_SOFT;
-        else if(al::case_compare(params[1], "s16") == 0)
+        else if(is_eq(al::case_compare(params[1], "s16")))
             RenderSamples = ALC_SHORT_SOFT;
         else
         {
@@ -1401,7 +1411,7 @@ auto main(std::span<std::string_view> args) -> int
 
 auto main(int const argc, char **const argv) -> int
 {
-    auto args = std::vector<std::string_view>(gsl::narrow<unsigned>(argc));
+    auto args = std::vector<al::zstring_view>(gsl::narrow<unsigned>(argc));
     std::ranges::copy(std::views::counted(argv, argc), args.begin());
     return main(std::span{args});
 }

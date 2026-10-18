@@ -131,7 +131,7 @@ endif()
 if(MSVC)
     option(FORCE_STATIC_VCRT "Force /MT for static VC runtimes" OFF)
     if(FORCE_STATIC_VCRT)
-        if(CMAKE_VERSION VERSION_GREATER_EQUAL 15.0)
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.15)
             set(ALSOFT_STD_VERSION_PROPS ${ALSOFT_STD_VERSION_PROPS}
                 MSVC_RUNTIME_LIBRARY MultiThreaded$<$<CONFIG:Debug>:Debug>)
         else()
@@ -243,7 +243,8 @@ option(ALSOFT_ENABLE_MODULES "Enable use of C++20 modules when supported" ON)
 set(HAVE_CXXMODULES FALSE)
 if(ALSOFT_ENABLE_MODULES)
     if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.28 AND (CMAKE_GENERATOR STREQUAL "Ninja"
-            OR CMAKE_GENERATOR STREQUAL "Visual Studio 17 2022"))
+            OR CMAKE_GENERATOR STREQUAL "Visual Studio 17 2022"
+            OR CMAKE_GENERATOR STREQUAL "Visual Studio 18 2026"))
         if((CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 17.0)
             OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15.0)
             OR (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14.34))
@@ -721,7 +722,6 @@ set(COMMON_MODS )
 set(COMMON_SRCS
     common/alcomplex.cpp
     common/almalloc.cpp
-    common/alstring.cpp
     common/althrd_setname.cpp
     common/altypes.cpp
     common/dynload.cpp
@@ -742,21 +742,29 @@ set(COMMON_HDRS
     common/altypes.hpp
     common/atomic.h
     common/bitset.hpp
+    common/cemath.hpp
     common/comptr.h
+    common/disable_alloc.hpp
     common/dynload.h
     common/dlopennote.h
     common/expected.hpp
     common/filesystem.h
     common/flexarray.h
+    common/ghc_filesystem.h
+    common/inout_ptr.hpp
+    common/instance_of.hpp
     common/intrusive_ptr.h
     common/opthelpers.h
     common/pffft.h
     common/polyphase_resampler.h
     common/pragmadefs.h
     common/ringbuffer.h
+    common/spanstream.hpp
     common/strutils.hpp
     common/vecmat.h
     common/vector.h
+    common/zstring_view.hpp
+    common/zudl.hpp
     gsl/include/gsl/algorithm
     gsl/include/gsl/assert
     gsl/include/gsl/byte
@@ -770,14 +778,22 @@ set(COMMON_HDRS
 )
 if(HAVE_CXXMODULES)
     list(APPEND COMMON_MODS
+        alsoft-modules/fmtlib.cppm
         alsoft-modules/gsl.cppm
-        alsoft-modules/hann_window.cppm
-        alsoft-modules/phase_shifter.cppm
-        common/alformattypes.cppm
+        common/alformat.cppm
+        common/alstring.cppm
+        common/altypes.cppm
+        common/cemath.cppm
+        common/filesystem.cppm
+        common/hann_window.cppm
+        common/phase_shifter.cppm
+        common/spanstream.cppm
+        common/zstring_view.cppm
     )
 else()
     list(APPEND COMMON_HDRS
         common/alformattypes.hpp
+        common/alformatzsv.hpp
         common/hann_window.hpp
         common/phase_shifter.hpp
     )
@@ -791,11 +807,9 @@ set(CORE_SRCS
     core/ambidefs.cpp
     core/bformatdec.cpp
     core/bs2b.cpp
-    core/bsinc_tables.cpp
     core/context.cpp
     core/converter.cpp
     core/cpu_caps.cpp
-    core/cubic_tables.cpp
     core/devformat.cpp
     core/device.cpp
     core/effectslot.cpp
@@ -825,15 +839,16 @@ set(CORE_HDRS
     core/bformatdec.h
     core/bs2b.h
     core/bsinc_defs.h
-    core/bsinc_tables.h
+    core/bsinc_tables.hpp
     core/bufferline.h
     core/buffer_storage.h
     core/context.h
     core/converter.h
     core/cpu_caps.h
     core/cubic_defs.h
-    core/cubic_tables.h
+    core/cubic_tables.hpp
     core/decoderbase.hpp
+    core/devfmttraits.hpp
     core/devformat.h
     core/device.h
     core/effects/base.h
@@ -846,22 +861,28 @@ set(CORE_HDRS
     core/fmt_traits.h
     core/fpu_ctrl.h
     core/front_stablizer.h
-    core/helpers.h
     core/hrtf.h
     core/hrtf_loader.hpp
     core/hrtf_resource.hpp
     core/mastering.h
     core/mixer.h
-    core/resampler_limits.h
+    core/mixparams.hpp
+    core/resampler_limits.hpp
     core/storage_formats.h
     core/tsmefilter.hpp
     core/uhjfilter.h
     core/voice.h
     core/voice_change.h)
 if(HAVE_CXXMODULES)
-    list(APPEND CORE_MODS core/logging.cppm)
+    list(APPEND CORE_MODS
+        core/bsinc_tables.cppm
+        core/context.cppm
+        core/cubic_tables.cppm
+        core/device.cppm
+        core/helpers.cppm
+        core/logging.cppm)
 else()
-    list(APPEND CORE_HDRS core/logging.h)
+    list(APPEND CORE_HDRS core/helpers.hpp core/logging.h)
 endif()
 
 set(HAVE_RTKIT 0)
@@ -987,7 +1008,9 @@ set(ALC_HDRS
     alc/export_list.h
     alc/inprogext.h)
 if(HAVE_CXXMODULES)
-    list(APPEND CORE_MODS alc/context.cppm)
+    list(APPEND CORE_MODS
+        alc/context.cppm
+        alc/device.cppm)
 endif()
 
 if(ALSOFT_EAX)
@@ -998,9 +1021,9 @@ if(ALSOFT_EAX)
         al/eax/exception.cpp
         al/eax/fx_slot_index.cpp
         al/eax/fx_slots.cpp
-        al/eax/utils.cpp
     )
     list(APPEND OPENAL_HDRS
+        al/eax/alapi.hpp
         al/eax/api.h
         al/eax/call.h
         al/eax/effect.h
@@ -1008,9 +1031,13 @@ if(ALSOFT_EAX)
         al/eax/fx_slot_index.h
         al/eax/fx_slots.h
         al/eax/globals.h
-        al/eax/utils.h
-        al/eax/x_ram.h
+        al/eax/presets.hpp
     )
+    if(HAVE_CXXMODULES)
+        list(APPEND CORE_MODS al/eax/validator.cppm)
+    else()
+        list(APPEND OPENAL_HDRS al/eax/validator.hpp)
+    endif()
 endif()
 
 # Include SIMD mixers
@@ -1066,6 +1093,11 @@ else()
 endif()
 
 set(BACKENDS "")
+if(HAVE_CXXMODULES)
+    list(APPEND CORE_MODS alc/backends/exception.cppm)
+else()
+    list(APPEND ALC_HDRS alc/backends/exception.hpp)
+endif()
 list(APPEND ALC_SRCS
     alc/backends/base.cpp
     # Default backends, always available
@@ -1073,9 +1105,9 @@ list(APPEND ALC_SRCS
     alc/backends/null.cpp
 )
 list(APPEND ALC_HDRS
-    alc/backends/base.h
-    alc/backends/loopback.h
-    alc/backends/null.h
+    alc/backends/base.hpp
+    alc/backends/loopback.hpp
+    alc/backends/null.hpp
 )
 
 # Check PipeWire backend
@@ -1087,7 +1119,7 @@ if(ALSOFT_BACKEND_PIPEWIRE AND PkgConfig_FOUND)
         set(HAVE_PIPEWIRE 1)
         set(BACKENDS  "${BACKENDS} PipeWire${IS_LINKED},")
         list(APPEND ALC_SRCS alc/backends/pipewire.cpp)
-        list(APPEND ALC_HDRS alc/backends/pipewire.h)
+        list(APPEND ALC_HDRS alc/backends/pipewire.hpp)
         add_backend_libs(${PIPEWIRE_LIBRARIES})
         list(APPEND INC_PATHS ${PIPEWIRE_INCLUDE_DIRS})
     endif()
@@ -1105,7 +1137,7 @@ if(ALSOFT_BACKEND_PULSEAUDIO)
         set(HAVE_PULSEAUDIO 1)
         set(BACKENDS  "${BACKENDS} PulseAudio${IS_LINKED},")
         list(APPEND ALC_SRCS alc/backends/pulseaudio.cpp)
-        list(APPEND ALC_HDRS alc/backends/pulseaudio.h)
+        list(APPEND ALC_HDRS alc/backends/pulseaudio.hpp)
         add_backend_libs(${PULSEAUDIO_LIBRARY})
         list(APPEND INC_PATHS ${PULSEAUDIO_INCLUDE_DIR})
     endif()
@@ -1124,7 +1156,7 @@ if(NOT WIN32)
             set(HAVE_ALSA 1)
             set(BACKENDS  "${BACKENDS} ALSA${IS_LINKED},")
             list(APPEND ALC_SRCS alc/backends/alsa.cpp)
-            list(APPEND ALC_HDRS alc/backends/alsa.h)
+            list(APPEND ALC_HDRS alc/backends/alsa.hpp)
             add_backend_libs(${ALSA_LIBRARIES})
             list(APPEND INC_PATHS ${ALSA_INCLUDE_DIRS})
         endif()
@@ -1139,7 +1171,7 @@ if(NOT WIN32)
             set(HAVE_OSS 1)
             set(BACKENDS  "${BACKENDS} OSS,")
             list(APPEND ALC_SRCS alc/backends/oss.cpp)
-            list(APPEND ALC_HDRS alc/backends/oss.h)
+            list(APPEND ALC_HDRS alc/backends/oss.hpp)
             if(OSS_LIBRARIES)
                 list(APPEND EXTRA_LIBS ${OSS_LIBRARIES})
             endif()
@@ -1156,7 +1188,7 @@ if(NOT WIN32)
             set(HAVE_SOLARIS 1)
             set(BACKENDS  "${BACKENDS} Solaris,")
             list(APPEND ALC_SRCS alc/backends/solaris.cpp)
-            list(APPEND ALC_HDRS alc/backends/solaris.h)
+            list(APPEND ALC_HDRS alc/backends/solaris.hpp)
             list(APPEND INC_PATHS ${AUDIOIO_INCLUDE_DIRS})
         endif()
     endif()
@@ -1204,7 +1236,7 @@ if(WIN32)
             set(HAVE_WASAPI 1)
             set(BACKENDS  "${BACKENDS} WASAPI,")
             list(APPEND ALC_SRCS alc/backends/wasapi.cpp)
-            list(APPEND ALC_HDRS alc/backends/wasapi.h)
+            list(APPEND ALC_HDRS alc/backends/wasapi.hpp)
             if(NOT ALSOFT_UWP)
                 list(APPEND EXTRA_LIBS avrt)
             endif()
@@ -1226,7 +1258,7 @@ if(WIN32)
                 set(HAVE_DSOUND 1)
                 set(BACKENDS "${BACKENDS} DirectSound,")
                 list(APPEND ALC_SRCS alc/backends/dsound.cpp)
-                list(APPEND ALC_HDRS alc/backends/dsound.h)
+                list(APPEND ALC_HDRS alc/backends/dsound.hpp)
                 if(NOT HAVE_DSOUND_H)
                     list(APPEND INC_PATHS ${DSOUND_INCLUDE_DIR})
                 endif()
@@ -1240,7 +1272,7 @@ if(WIN32)
             set(HAVE_WINMM 1)
             set(BACKENDS "${BACKENDS} WinMM,")
             list(APPEND ALC_SRCS alc/backends/winmm.cpp)
-            list(APPEND ALC_HDRS alc/backends/winmm.h)
+            list(APPEND ALC_HDRS alc/backends/winmm.hpp)
             # There doesn't seem to be good way to search for winmm.lib for MSVC.
             # find_library doesn't find it without being told to look in a specific
             # place in the WindowsSDK, but it links anyway. If there ends up being
@@ -1268,7 +1300,7 @@ if(ALSOFT_BACKEND_JACK)
         set(HAVE_JACK 1)
         set(BACKENDS  "${BACKENDS} JACK${IS_LINKED},")
         list(APPEND ALC_SRCS alc/backends/jack.cpp)
-        list(APPEND ALC_HDRS alc/backends/jack.h)
+        list(APPEND ALC_HDRS alc/backends/jack.hpp)
         add_backend_libs(${JACK_LIBRARIES})
         list(APPEND INC_PATHS ${JACK_INCLUDE_DIRS})
     endif()
@@ -1287,7 +1319,7 @@ if(ALSOFT_BACKEND_COREAUDIO)
         set(HAVE_COREAUDIO 1)
         set(BACKENDS  "${BACKENDS} CoreAudio,")
         list(APPEND ALC_SRCS alc/backends/coreaudio.cpp)
-        list(APPEND ALC_HDRS alc/backends/coreaudio.h)
+        list(APPEND ALC_HDRS alc/backends/coreaudio.hpp)
 
         # Some versions of OSX may need the AudioToolbox framework. Add it if
         # it's found.
@@ -1338,7 +1370,7 @@ if(ALSOFT_BACKEND_OBOE)
         set(HAVE_OBOE 1)
         set(BACKENDS  "${BACKENDS} Oboe,")
         list(APPEND ALC_SRCS alc/backends/oboe.cpp)
-        list(APPEND ALC_HDRS alc/backends/oboe.h)
+        list(APPEND ALC_HDRS alc/backends/oboe.hpp)
         list(APPEND EXTRA_LIBS ${OBOE_TARGET})
     endif()
 endif()
@@ -1355,7 +1387,7 @@ if(ALSOFT_BACKEND_OPENSL)
         set(HAVE_OPENSL 1)
         set(BACKENDS  "${BACKENDS} OpenSL${IS_LINKED},")
         list(APPEND ALC_SRCS alc/backends/opensl.cpp)
-        list(APPEND ALC_HDRS alc/backends/opensl.h)
+        list(APPEND ALC_HDRS alc/backends/opensl.hpp)
         add_backend_libs(${OPENSL_LIBRARIES})
         list(APPEND INC_PATHS ${OPENSL_INCLUDE_DIRS})
     endif()
@@ -1392,7 +1424,7 @@ if(ALSOFT_BACKEND_SDL3)
         set(HAVE_SDL3 1)
         set(BACKENDS  "${BACKENDS} SDL3,")
         list(APPEND ALC_SRCS alc/backends/sdl3.cpp)
-        list(APPEND ALC_HDRS alc/backends/sdl3.h)
+        list(APPEND ALC_HDRS alc/backends/sdl3.hpp)
         list(APPEND EXTRA_LIBS SDL3::SDL3)
     else()
         message(STATUS "Could NOT find SDL3")
@@ -1410,7 +1442,7 @@ if(ALSOFT_BACKEND_SDL2 AND NOT HAVE_SDL3)
         set(HAVE_SDL2 1)
         set(BACKENDS  "${BACKENDS} SDL2,")
         list(APPEND ALC_SRCS alc/backends/sdl2.cpp)
-        list(APPEND ALC_HDRS alc/backends/sdl2.h)
+        list(APPEND ALC_HDRS alc/backends/sdl2.hpp)
         list(APPEND EXTRA_LIBS SDL2::SDL2)
     else()
         message(STATUS "Could NOT find SDL2")
@@ -1426,7 +1458,7 @@ if(ALSOFT_BACKEND_WAVE)
     set(HAVE_WAVE 1)
     set(BACKENDS  "${BACKENDS} WaveFile,")
     list(APPEND ALC_SRCS alc/backends/wave.cpp)
-    list(APPEND ALC_HDRS alc/backends/wave.h)
+    list(APPEND ALC_HDRS alc/backends/wave.hpp)
 endif()
 
 # This is always available
@@ -1749,7 +1781,7 @@ else()
                 "ALC_API=${EXPORT_DECL}" "AL_API=${EXPORT_DECL}" ${CPP_DEFS})
             target_compile_options(alsoft.router-modules PRIVATE ${C_FLAGS})
             target_link_libraries(alsoft.router-modules PRIVATE Threads::Threads alsoft::fmt
-                PUBLIC alsoft::buildapi-modules)
+                PUBLIC alsoft::buildapi-modules alsoft::common)
             set_target_properties(alsoft.router-modules PROPERTIES ${ALSOFT_STD_VERSION_PROPS}
                 POSITION_INDEPENDENT_CODE TRUE)
             set(ROUTER_MODULES_TARGET alsoft.router-modules)
@@ -2122,14 +2154,23 @@ endif()
 
 
 # Add a static library with common functions used by multiple example targets
-add_library(alsoft.excommon STATIC EXCLUDE_FROM_ALL
-    examples/common/alhelpers.c
-    examples/common/alhelpers.h
-    examples/common/alhelpers.hpp)
+add_library(alsoft.excommon STATIC EXCLUDE_FROM_ALL)
+if(CMAKE_VERSION GREATER_EQUAL 3.23)
+    target_sources(alsoft.excommon PRIVATE examples/common/alhelpers.c
+        PUBLIC FILE_SET HEADERS FILES examples/common/alhelpers.h examples/common/alhelpers.hpp)
+    if(HAVE_CXXMODULES)
+        target_sources(alsoft.excommon
+            PUBLIC FILE_SET CXX_MODULES FILES examples/common/alhelpers.cppm)
+    endif()
+else()
+    target_sources(alsoft.excommon PRIVATE examples/common/alhelpers.c
+        PUBLIC examples/common/alhelpers.h examples/common/alhelpers.hpp)
+endif()
 target_compile_definitions(alsoft.excommon PUBLIC ${CPP_DEFS})
 target_include_directories(alsoft.excommon PUBLIC ${OpenAL_BINARY_DIR} ${OpenAL_SOURCE_DIR}/common)
 target_compile_options(alsoft.excommon PUBLIC ${C_FLAGS})
-target_link_libraries(alsoft.excommon PUBLIC Threads::Threads OpenAL PRIVATE ${RT_LIB})
+target_link_libraries(alsoft.excommon PUBLIC Threads::Threads OpenAL
+    PRIVATE ${RT_LIB} ${MODULES_TARGET} alsoft::common)
 set_target_properties(alsoft.excommon PROPERTIES ${ALSOFT_STD_VERSION_PROPS})
 
 if(ALSOFT_EXAMPLES)

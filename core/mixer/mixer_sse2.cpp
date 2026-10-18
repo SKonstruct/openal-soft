@@ -30,10 +30,15 @@
 
 #include "alnumeric.h"
 #include "core/cubic_defs.h"
-#include "core/resampler_limits.h"
+#include "core/resampler_limits.hpp"
 #include "defs.h"
-#include "gsl/gsl"
 #include "opthelpers.h"
+
+#if HAVE_CXXMODULES
+import gsl;
+#else
+#include "gsl/gsl"
+#endif
 
 
 #if defined(__GNUC__) && !defined(__clang__) && !defined(__SSE2__) && !defined(__powerpc64__)

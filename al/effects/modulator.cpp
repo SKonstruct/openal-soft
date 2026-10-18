@@ -7,21 +7,26 @@
 #include "AL/al.h"
 #include "AL/efx.h"
 
-#include "alformat.hpp"
 #include "alnumeric.h"
 #include "effects.h"
 
 #if ALSOFT_EAX
 #include "al/eax/effect.h"
 #include "al/eax/exception.h"
-#include "al/eax/utils.h"
+#if HAVE_CXXMODULES
+import eax.validator;
+#else
+#include "al/eax/validator.hpp"
+#endif
 #endif // ALSOFT_EAX
 
 #if HAVE_CXXMODULES
 import alc.context;
+import format;
 import gsl;
 #else
 #include "alc/context.hpp"
+#include "alformat.hpp"
 #include "gsl/gsl"
 #endif
 
@@ -63,7 +68,7 @@ consteval auto genDefaultProps() noexcept -> EffectProps
 
 constinit const EffectProps ModulatorEffectProps(genDefaultProps());
 
-void ModulatorEffectHandler::SetParami(al::Context *context, ModulatorProps &props, ALenum param, int val)
+void ModulatorEffectHandler::SetParami(al::Context& context, ModulatorProps &props, ALenum param, int val)
 {
     switch(param)
     {
@@ -76,42 +81,42 @@ void ModulatorEffectHandler::SetParami(al::Context *context, ModulatorProps &pro
         if(auto formopt = WaveformFromEmum(val))
             props.Waveform = *formopt;
         else
-            context->throw_error(AL_INVALID_VALUE, "Invalid modulator waveform: {:#04x}",
+            context.throw_error(AL_INVALID_VALUE, "Invalid modulator waveform: {:#04x}",
                 as_unsigned(val));
         return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid modulator integer property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid modulator integer property {:#04x}",
         as_unsigned(param));
 }
-void ModulatorEffectHandler::SetParamiv(al::Context *context, ModulatorProps &props, ALenum param, const int *vals)
+void ModulatorEffectHandler::SetParamiv(al::Context& context, ModulatorProps &props, ALenum param, const int *vals)
 { SetParami(context, props, param, *vals); }
 
-void ModulatorEffectHandler::SetParamf(al::Context *context, ModulatorProps &props, ALenum param, float val)
+void ModulatorEffectHandler::SetParamf(al::Context& context, ModulatorProps &props, ALenum param, float val)
 {
     switch(param)
     {
     case AL_RING_MODULATOR_FREQUENCY:
         if(!(val >= AL_RING_MODULATOR_MIN_FREQUENCY && val <= AL_RING_MODULATOR_MAX_FREQUENCY))
-            context->throw_error(AL_INVALID_VALUE, "Modulator frequency out of range: {:f}", val);
+            context.throw_error(AL_INVALID_VALUE, "Modulator frequency out of range: {:f}", val);
         props.Frequency = val;
         return;
 
     case AL_RING_MODULATOR_HIGHPASS_CUTOFF:
         if(!(val >= AL_RING_MODULATOR_MIN_HIGHPASS_CUTOFF && val <= AL_RING_MODULATOR_MAX_HIGHPASS_CUTOFF))
-            context->throw_error(AL_INVALID_VALUE, "Modulator high-pass cutoff out of range: {:f}",
+            context.throw_error(AL_INVALID_VALUE, "Modulator high-pass cutoff out of range: {:f}",
                 val);
         props.HighPassCutoff = val;
         return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid modulator float property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid modulator float property {:#04x}",
         as_unsigned(param));
 }
-void ModulatorEffectHandler::SetParamfv(al::Context *context, ModulatorProps &props, ALenum param, const float *vals)
+void ModulatorEffectHandler::SetParamfv(al::Context& context, ModulatorProps &props, ALenum param, const float *vals)
 { SetParamf(context, props, param, *vals); }
 
-void ModulatorEffectHandler::GetParami(al::Context *context, const ModulatorProps &props, ALenum param, int *val)
+void ModulatorEffectHandler::GetParami(al::Context& context, const ModulatorProps &props, ALenum param, int *val)
 {
     switch(param)
     {
@@ -120,12 +125,12 @@ void ModulatorEffectHandler::GetParami(al::Context *context, const ModulatorProp
     case AL_RING_MODULATOR_WAVEFORM: *val = EnumFromWaveform(props.Waveform); return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid modulator integer property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid modulator integer property {:#04x}",
         as_unsigned(param));
 }
-void ModulatorEffectHandler::GetParamiv(al::Context *context, const ModulatorProps &props, ALenum param, int *vals)
+void ModulatorEffectHandler::GetParamiv(al::Context& context, const ModulatorProps &props, ALenum param, int *vals)
 { GetParami(context, props, param, vals); }
-void ModulatorEffectHandler::GetParamf(al::Context *context, const ModulatorProps &props, ALenum param, float *val)
+void ModulatorEffectHandler::GetParamf(al::Context& context, const ModulatorProps &props, ALenum param, float *val)
 {
     switch(param)
     {
@@ -133,22 +138,27 @@ void ModulatorEffectHandler::GetParamf(al::Context *context, const ModulatorProp
     case AL_RING_MODULATOR_HIGHPASS_CUTOFF: *val = props.HighPassCutoff; return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid modulator float property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid modulator float property {:#04x}",
         as_unsigned(param));
 }
-void ModulatorEffectHandler::GetParamfv(al::Context *context, const ModulatorProps &props, ALenum param, float *vals)
+void ModulatorEffectHandler::GetParamfv(al::Context& context, const ModulatorProps &props, ALenum param, float *vals)
 { GetParamf(context, props, param, vals); }
 
 
 #if ALSOFT_EAX
 namespace {
 
-using ModulatorCommitter = EaxCommitter<EaxModulatorCommitter>;
+/* NOLINTNEXTLINE(clazy-copyable-polymorphic) Exceptions must be copyable. */
+struct EaxModulatorException final : EaxException {
+    explicit EaxModulatorException(std::string_view const message)
+        : EaxException{"EAX_RING_MODULATOR_EFFECT", message}
+    { }
+};
 
 struct FrequencyValidator {
     void operator()(float const flFrequency) const
     {
-        eax_validate_range<ModulatorCommitter::Exception>(
+        eax_validate_range<EaxModulatorException>(
             "Frequency",
             flFrequency,
             EAXRINGMODULATOR_MINFREQUENCY,
@@ -159,7 +169,7 @@ struct FrequencyValidator {
 struct HighPassCutOffValidator {
     void operator()(float const flHighPassCutOff) const
     {
-        eax_validate_range<ModulatorCommitter::Exception>(
+        eax_validate_range<EaxModulatorException>(
             "High-Pass Cutoff",
             flHighPassCutOff,
             EAXRINGMODULATOR_MINHIGHPASSCUTOFF,
@@ -170,7 +180,7 @@ struct HighPassCutOffValidator {
 struct WaveformValidator {
     void operator()(eax_ulong const ulWaveform) const
     {
-        eax_validate_range<ModulatorCommitter::Exception>(
+        eax_validate_range<EaxModulatorException>(
             "Waveform",
             ulWaveform,
             EAXRINGMODULATOR_MINWAVEFORM,
@@ -189,17 +199,11 @@ struct AllValidator {
 
 } // namespace
 
-template<> /* NOLINTNEXTLINE(clazy-copyable-polymorphic) Exceptions must be copyable. */
-struct ModulatorCommitter::Exception final : EaxException {
-    explicit Exception(const std::string_view message)
-        : EaxException{"EAX_RING_MODULATOR_EFFECT", message}
-    { }
-};
-
 template<> [[noreturn]]
-void ModulatorCommitter::fail(const std::string_view message)
-{ throw Exception{message}; }
+void EaxModulatorCommitter::fail(std::string_view const message)
+{ throw EaxModulatorException{message}; }
 
+template<>
 auto EaxModulatorCommitter::commit(const EAXRINGMODULATORPROPERTIES &props) const -> bool
 {
     if(auto *cur = std::get_if<EAXRINGMODULATORPROPERTIES>(&mEaxProps); cur && *cur == props)
@@ -226,6 +230,7 @@ auto EaxModulatorCommitter::commit(const EAXRINGMODULATORPROPERTIES &props) cons
     return true;
 }
 
+template<>
 void EaxModulatorCommitter::SetDefaults(EaxEffectProps &props)
 {
     props = EAXRINGMODULATORPROPERTIES{
@@ -234,6 +239,7 @@ void EaxModulatorCommitter::SetDefaults(EaxEffectProps &props)
         .ulWaveform = EAXRINGMODULATOR_DEFAULTWAVEFORM};
 }
 
+template<>
 void EaxModulatorCommitter::Get(const EaxCall &call, const EAXRINGMODULATORPROPERTIES &props)
 {
     switch(call.get_property_id())
@@ -247,6 +253,7 @@ void EaxModulatorCommitter::Get(const EaxCall &call, const EAXRINGMODULATORPROPE
     }
 }
 
+template<>
 void EaxModulatorCommitter::Set(const EaxCall &call, EAXRINGMODULATORPROPERTIES &props)
 {
     switch(call.get_property_id())

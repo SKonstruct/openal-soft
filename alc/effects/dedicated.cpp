@@ -20,20 +20,23 @@
 
 #include "config.h"
 
-#include <algorithm>
 #include <array>
-#include <cstdlib>
+#include <cstdint>
 #include <span>
 #include <variant>
 
 #include "alc/effects/base.h"
 #include "core/bufferline.h"
-#include "core/devformat.h"
-#include "core/device.h"
 #include "core/effects/base.h"
 #include "core/effectslot.h"
 #include "core/mixer.h"
 #include "intrusive_ptr.h"
+
+#if HAVE_CXXMODULES
+import core.device;
+#else
+#include "core/device.h"
+#endif
 
 struct BufferStorage;
 struct ContextBase;
@@ -41,7 +44,9 @@ struct ContextBase;
 
 namespace {
 
-struct DedicatedState final : public EffectState {
+constexpr auto FrontCenterCoeffs = CalcDirectionCoeffs(std::array{0.0f, 0.0f, -1.0f});
+
+struct DedicatedState final : EffectState {
     /* The "dedicated" effect can output to the real output, so should have
      * gains for all possible output channels and not just the main ambisonic
      * buffer.
@@ -50,11 +55,11 @@ struct DedicatedState final : public EffectState {
     std::array<float,MaxOutputChannels> mTargetGains{};
 
 
-    void deviceUpdate(const DeviceBase *device, const BufferStorage *buffer) final;
+    void deviceUpdate(const DeviceBase *device, const BufferStorage *buffer) override;
     void update(const ContextBase *context, const EffectSlotBase *slot, const EffectProps *props_,
-        const EffectTarget target) final;
-    void process(const size_t samplesToDo, const std::span<const FloatBufferLine> samplesIn,
-        const std::span<FloatBufferLine> samplesOut) final;
+        EffectTarget target) noexcept NONBLOCKING override;
+    void process(size_t samplesToDo, std::span<const FloatBufferLine> samplesIn,
+        std::span<FloatBufferLine> samplesOut) noexcept override;
 };
 
 void DedicatedState::deviceUpdate(const DeviceBase*, const BufferStorage*)
@@ -63,11 +68,11 @@ void DedicatedState::deviceUpdate(const DeviceBase*, const BufferStorage*)
 }
 
 void DedicatedState::update(const ContextBase*, const EffectSlotBase *slot,
-    const EffectProps *props_, const EffectTarget target)
+    const EffectProps *props_, const EffectTarget target) noexcept NONBLOCKING
 {
     mTargetGains.fill(0.0f);
 
-    auto &props = std::get<DedicatedProps>(*props_);
+    auto &props = IGNORE_FUNCTION_EFFECTS(std::get<DedicatedProps>(*props_));
     const auto Gain = slot->Gain * props.Gain;
 
     if(props.Target == DedicatedProps::Dialog)
@@ -79,14 +84,12 @@ void DedicatedState::update(const ContextBase*, const EffectSlotBase *slot,
             : InvalidChannelIndex; idx != InvalidChannelIndex)
         {
             mOutTarget = target.RealOut->Buffer;
-            mTargetGains[idx.c_val] = Gain;
+            mTargetGains[idx] = Gain;
         }
         else
         {
-            static constexpr auto coeffs = CalcDirectionCoeffs(std::array{0.0f, 0.0f, -1.0f});
-
             mOutTarget = target.Main->Buffer;
-            ComputePanGains(target.Main, coeffs, Gain,
+            ComputePanGains(target.Main, FrontCenterCoeffs, Gain,
                 std::span{mTargetGains}.first<MaxAmbiChannels>());
         }
     }
@@ -96,20 +99,21 @@ void DedicatedState::update(const ContextBase*, const EffectSlotBase *slot,
             idx != InvalidChannelIndex)
         {
             mOutTarget = target.RealOut->Buffer;
-            mTargetGains[idx.c_val] = Gain;
+            mTargetGains[idx] = Gain;
         }
     }
 }
 
 void DedicatedState::process(const size_t samplesToDo,
     const std::span<const FloatBufferLine> samplesIn, const std::span<FloatBufferLine> samplesOut)
+    noexcept NONBLOCKING
 {
     MixSamples(std::span{samplesIn[0]}.first(samplesToDo), samplesOut, mCurrentGains, mTargetGains,
         samplesToDo, 0);
 }
 
 
-struct DedicatedStateFactory final : public EffectStateFactory {
+struct DedicatedStateFactory final : EffectStateFactory {
     al::intrusive_ptr<EffectState> create() override
     { return al::intrusive_ptr<EffectState>{new DedicatedState{}}; }
 };

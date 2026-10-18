@@ -13,11 +13,10 @@
 #include "inprogext.h"
 #include "opthelpers.h"
 #if ALSOFT_EAX
-#include "al/eax/api.h"
-#include "al/eax/x_ram.h"
+#include "al/eax/alapi.hpp"
 #endif
 
-#if defined(__linux__) && !defined(AL_LIBTYPE_STATIC) && HAS_ATTRIBUTE(gnu::alias)
+#if defined(__linux__) && !defined(AL_LIBTYPE_STATIC) && __has_cpp_attribute(gnu::alias)
 #define GetFuncPtr(x) reinterpret_cast<void*>(&x##_)
 #define DeclareFuncAlias(x) extern "C" DECL_HIDDEN decltype(x) x##_
 

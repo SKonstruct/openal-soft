@@ -36,7 +36,6 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
-#include <fstream>
 #include <istream>
 #include <limits>
 #include <ranges>
@@ -45,13 +44,8 @@
 #include <utility>
 #include <vector>
 
-#include "almalloc.h"
 #include "alnumeric.h"
-#include "alstring.h"
-#include "core/helpers.h"
-#include "filesystem.h"
-#include "fmt/ranges.h"
-#include "gsl/gsl"
+#include "inout_ptr.hpp"
 #include "strutils.hpp"
 
 #if ALSOFT_UWP
@@ -63,9 +57,20 @@ using namespace winrt;
 #endif
 
 #if HAVE_CXXMODULES
+import alstring;
+import core.helpers;
+import filesystem;
+import fmtlib;
+import gsl;
 import logging;
 #else
+#include "alstring.h"
+#include "core/helpers.hpp"
 #include "core/logging.h"
+#include "filesystem.h"
+#include "fmt/format.h"
+#include "fmt/ranges.h"
+#include "gsl/gsl"
 #endif
 
 namespace {
@@ -235,7 +240,7 @@ void LoadConfigFromFile(std::istream &f)
             auto section = std::string_view{buffer}.substr(1, endpos-1);
 
             curSection.clear();
-            if(al::case_compare(section, "general"sv) == 0)
+            if(is_eq(al::case_compare(section, "general"sv)))
                 continue;
 
             while(!section.empty())
@@ -350,7 +355,7 @@ auto GetConfigValue(const std::string_view devName, const std::string_view block
         return EmptyString;
 
     auto key = std::string{};
-    if(!blockName.empty() && al::case_compare(blockName, "general"sv) != 0)
+    if(!blockName.empty() && is_neq(al::case_compare(blockName, "general"sv)))
     {
         key = blockName;
         key += '/';
@@ -480,7 +485,7 @@ void ReadALConfig()
         auto fileName = std::array<unsigned char,PATH_MAX>{};
         if(configURL && CFURLGetFileSystemRepresentation(configURL, true, fileName.data(), fileName.size()))
         {
-            if(auto f = std::ifstream{reinterpret_cast<char*>(fileName.data())}; f.is_open())
+            if(auto f = fs::ifstream{reinterpret_cast<char*>(fileName.data())}; f.is_open())
                 LoadConfigFromFile(f);
         }
     }
@@ -492,7 +497,7 @@ void ReadALConfig()
         path /= ".alsoftrc";
 
         TRACE("Loading config {}...", al::u8_as_char(path.u8string()));
-        if(auto f = std::ifstream{path}; f.is_open())
+        if(auto f = fs::ifstream{path}; f.is_open())
             LoadConfigFromFile(f);
     }
 
@@ -513,7 +518,7 @@ void ReadALConfig()
     if(!path.empty())
     {
         TRACE("Loading config {}...", al::u8_as_char(path.u8string()));
-        if(auto f = std::ifstream{path}; f.is_open())
+        if(auto f = fs::ifstream{path}; f.is_open())
             LoadConfigFromFile(f);
     }
 
@@ -523,14 +528,14 @@ void ReadALConfig()
         path /= "alsoft.conf";
 
         TRACE("Loading config {}...", al::u8_as_char(path.u8string()));
-        if(auto f = std::ifstream{path}; f.is_open())
+        if(auto f = fs::ifstream{path}; f.is_open())
             LoadConfigFromFile(f);
     }
 
     if(auto confname = al::getenv("ALSOFT_CONF"))
     {
         TRACE("Loading config {}...", *confname);
-        if(auto f = std::ifstream{*confname}; f.is_open())
+        if(auto f = fs::ifstream{*confname}; f.is_open())
             LoadConfigFromFile(f);
     }
 }
@@ -594,8 +599,8 @@ auto ConfigValueBool(std::string_view const devName, std::string_view const bloc
     std::string_view const keyName) -> std::optional<bool>
 {
     if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty()) try {
-        return al::case_compare(val, "on"sv) == 0 || al::case_compare(val, "yes"sv) == 0
-            || al::case_compare(val, "true"sv) == 0 || std::stoll(val) != 0;
+        return is_eq(al::case_compare(val, "on"sv)) or is_eq(al::case_compare(val, "yes"sv))
+            or is_eq(al::case_compare(val, "true"sv)) or std::stoll(val) != 0;
     }
     catch(std::out_of_range&) {
         /* If out of range, the value is some non-0 (true) value and it doesn't
@@ -616,8 +621,8 @@ auto GetConfigValueBool(const std::string_view devName, const std::string_view b
     const std::string_view keyName, bool def) -> bool
 {
     if(auto&& val = GetConfigValue(devName, blockName, keyName); !val.empty()) try {
-        return al::case_compare(val, "on"sv) == 0 || al::case_compare(val, "yes"sv) == 0
-            || al::case_compare(val, "true"sv) == 0 || std::stoll(val) != 0;
+        return is_eq(al::case_compare(val, "on"sv)) or is_eq(al::case_compare(val, "yes"sv))
+            or is_eq(al::case_compare(val, "true"sv)) or std::stoll(val) != 0;
     }
     catch(std::out_of_range&) {
         return true;

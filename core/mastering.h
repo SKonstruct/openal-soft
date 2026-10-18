@@ -45,7 +45,7 @@ class Compressor {
     f32 mAttack{0.0f};
     f32 mRelease{0.0f};
 
-    alignas(16) std::array<f32, BufferLineSize*2_uz> mSideChain{};
+    alignas(16) std::array<f32, BufferLineSize*2> mSideChain{};
     alignas(16) std::array<f32, BufferLineSize> mCrestFactor{};
 
     std::unique_ptr<SlidingHold> mHold;
@@ -78,7 +78,7 @@ public:
     Compressor(const Compressor&) = delete;
     auto operator=(const Compressor&) -> Compressor& = delete;
 
-    void process(unsigned SamplesToDo, std::span<FloatBufferLine> InOut);
+    void process(unsigned SamplesToDo, std::span<FloatBufferLine> InOut) noexcept NONBLOCKING;
     [[nodiscard]] auto getLookAhead() const noexcept -> unsigned { return mLookAhead; }
 
     /** Parameters for initializing the compressor. */

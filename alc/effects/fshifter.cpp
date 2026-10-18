@@ -24,8 +24,9 @@
 #include <array>
 #include <cmath>
 #include <complex>
-#include <cstdlib>
+#include <cstdint>
 #include <numbers>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <variant>
@@ -35,17 +36,21 @@
 #include "alnumeric.h"
 #include "core/ambidefs.h"
 #include "core/bufferline.h"
-#include "core/context.h"
-#include "core/device.h"
 #include "core/effects/base.h"
 #include "core/effectslot.h"
+#include "core/filters/splitter.h"
 #include "core/mixer.h"
 #include "core/mixer/defs.h"
 #include "intrusive_ptr.h"
+#include "zudl.hpp"
 
 #if HAVE_CXXMODULES
+import core.context;
+import core.device;
 import window.hann;
 #else
+#include "core/context.h"
+#include "core/device.h"
 #include "hann_window.hpp"
 #endif
 
@@ -90,7 +95,7 @@ constexpr auto HilStep = HilSize / OversampleFactor;
 auto &gWindow = gHannWindow<HilSize>;
 
 
-struct FshifterState final : public EffectState {
+struct FshifterState final : EffectState {
     /* Effect parameters */
     size_t mCount{};
     size_t mPos{};
@@ -106,7 +111,7 @@ struct FshifterState final : public EffectState {
         unsigned mPhase{};
         double mSign{1.0};
 
-        unsigned mTargetChannel{InvalidChannelIndex.c_val};
+        unsigned mTargetChannel{InvalidChannelIndex};
 
         /* Current and target gain for this channel. */
         float mCurrentGain{};
@@ -133,9 +138,9 @@ struct FshifterState final : public EffectState {
 
     void deviceUpdate(const DeviceBase *device, const BufferStorage *buffer) override;
     void update(const ContextBase *context, const EffectSlotBase *slot, const EffectProps *props,
-        const EffectTarget target) override;
-    void process(const size_t samplesToDo, const std::span<const FloatBufferLine> samplesIn,
-        const std::span<FloatBufferLine> samplesOut) override;
+        EffectTarget target) noexcept NONBLOCKING override;
+    void process(size_t samplesToDo, std::span<const FloatBufferLine> samplesIn,
+        std::span<FloatBufferLine> samplesOut) noexcept override;
 };
 
 void FshifterState::deviceUpdate(DeviceBase const *device, BufferStorage const*)
@@ -169,12 +174,12 @@ void FshifterState::deviceUpdate(DeviceBase const *device, BufferStorage const*)
 }
 
 void FshifterState::update(const ContextBase *context, const EffectSlotBase *slot,
-    const EffectProps *props_, const EffectTarget target)
+    const EffectProps *props_, const EffectTarget target) noexcept NONBLOCKING
 {
-    auto &props = std::get<FshifterProps>(*props_);
-    auto const device = al::get_not_null(context->mDevice);
+    auto &props = IGNORE_FUNCTION_EFFECTS(std::get<FshifterProps>(*props_));
+    auto const &device = context->mDevice;
 
-    const auto step = props.Frequency / static_cast<float>(device->mSampleRate);
+    const auto step = props.Frequency / static_cast<float>(device.mSampleRate);
     std::ranges::fill(mChans | std::views::transform(&ProcessParams::mPhaseStep),
         fastf2u(std::min(step, 1.0f) * MixerFracOne));
 
@@ -210,18 +215,18 @@ void FshifterState::update(const ContextBase *context, const EffectSlotBase *slo
 
     mOutTarget = target.Main->Buffer;
     target.Main->setAmbiMixParams(slot->Wet, slot->Gain,
-        [this](std::size_t const idx, u8 const outchan, float const outgain)
+        [this](std::size_t const idx, std::uint8_t const outchan, float const outgain)
     {
         if(idx < mChans.size())
         {
-            mChans[idx].mTargetChannel = outchan.c_val;
+            mChans[idx].mTargetChannel = outchan;
             mChans[idx].mTargetGain = outgain;
         }
     });
 
     if(mUpsampler.has_value())
     {
-        auto &upsampler = mUpsampler.value();
+        auto &upsampler = *mUpsampler;
         const auto upmatrix = std::span{AmbiScale::FirstOrderUp};
 
         auto const outgain = slot->Gain;
@@ -235,6 +240,7 @@ void FshifterState::update(const ContextBase *context, const EffectSlotBase *slo
 
 void FshifterState::process(const size_t samplesToDo,
     const std::span<const FloatBufferLine> samplesIn, const std::span<FloatBufferLine> samplesOut)
+    noexcept NONBLOCKING
 {
     /* Clear the B-Format buffer that accumulates the result. */
     for(auto &outbuf : mBBuffer)
@@ -333,7 +339,7 @@ void FshifterState::process(const size_t samplesToDo,
     /* Now, mix the processed sound data to the output. */
     if(mUpsampler.has_value())
     {
-        auto &upsampler = mUpsampler.value();
+        auto &upsampler = *mUpsampler;
         auto chandata = mChans.begin();
         for(const auto c : std::views::iota(0_uz, NumLines))
         {

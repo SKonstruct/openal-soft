@@ -10,7 +10,13 @@
 #include <span>
 
 #include "alnumeric.h"
+#include "zudl.hpp"
+
+#if HAVE_CXXMODULES
+import gsl;
+#else
 #include "gsl/gsl"
+#endif
 
 namespace {
 
@@ -313,7 +319,7 @@ constinit UpsamplerArrays<16> const ThirdOrder2DUp{CalcAmbiUpsampler(Order3Dec2D
 constinit UpsamplerArrays<25> const FourthOrder2DUp{CalcAmbiUpsampler(Order4Dec2D, Order4Enc2D)};
 
 auto GetHFOrderScales(unsigned const src_order, unsigned const dev_order,
-    bool const horizontalOnly) noexcept -> std::array<float, MaxAmbiOrder+1>
+    bool const horizontalOnly) noexcept NONBLOCKING -> std::array<float, MaxAmbiOrder+1>
 {
     auto res = std::array<float, MaxAmbiOrder+1>{};
 

@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
@@ -10,23 +11,24 @@
 #include <string_view>
 #include <vector>
 
-#include "almalloc.h"
 #include "ambidefs.h"
 #include "bufferline.h"
 #include "flexarray.h"
 #include "intrusive_ptr.h"
 #include "mixer/hrtfdefs.h"
+#include "opthelpers.h"
 
 
 struct HrtfStore {
     alignas(16) std::atomic<unsigned> mRef;
+    std::u8string mFilename;
 
     unsigned mSampleRate : 24;
     unsigned mIrSize : 8;
 
     struct Field {
         float distance;
-        u8 evCount;
+        std::uint8_t evCount;
     };
     /* NOTE: Fields are stored *backwards*. mFields.front() is the farthest
      * field, and mFields.back() is the nearest.
@@ -34,15 +36,15 @@ struct HrtfStore {
     std::span<Field const> mFields;
 
     struct Elevation {
-        u16 azCount;
-        u16 irOffset;
+        std::uint16_t azCount;
+        std::uint16_t irOffset;
     };
     std::span<Elevation> mElev;
     std::span<HrirArray const> mCoeffs;
     std::span<u8x2 const> mDelays;
 
     void getCoeffs(float elevation, float azimuth, float distance, float spread,
-        HrirSpan coeffs, std::span<unsigned, 2> delays) const;
+        HrirSpan coeffs, std::span<unsigned, 2> delays) const noexcept NONBLOCKING;
 
     void inc_ref() noexcept;
     void dec_ref() noexcept;
@@ -51,9 +53,9 @@ struct HrtfStore {
     auto operator new[](std::size_t) -> void* = delete;
     void operator delete[](void*) noexcept = delete;
 
-    void operator delete(gsl::owner<void*> block, void*) noexcept
+    void operator delete(gsl::owner<void*> const block, void*) noexcept
     { ::operator delete[](block, std::align_val_t{alignof(HrtfStore)}); }
-    void operator delete(gsl::owner<void*> block) noexcept
+    void operator delete(gsl::owner<void*> const block) noexcept
     { ::operator delete[](block, std::align_val_t{alignof(HrtfStore)}); }
 };
 using HrtfStorePtr = al::intrusive_ptr<HrtfStore>;

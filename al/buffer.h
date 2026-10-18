@@ -5,21 +5,22 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <string_view>
 #include <variant>
 
 #include "AL/al.h"
 
 #include "alc/inprogext.h"
-#include "almalloc.h"
 #include "altypes.hpp"
 #include "core/buffer_storage.h"
+#include "disable_alloc.hpp"
 #include "gsl/gsl"
 #include "intrusive_ptr.h"
 #include "vector.h"
 
 #if ALSOFT_EAX
-enum class EaxStorage : u8::value_t {
+enum class EaxStorage : std::uint8_t {
     Automatic,
     Accessible,
     Hardware
@@ -33,11 +34,11 @@ struct Context;
 struct Buffer : BufferStorage {
     ALbitfieldSOFT mAccess{0u};
 
-    std::variant<al::vector<u8, 16>,
-        al::vector<i16, 16>,
-        al::vector<i32, 16>,
-        al::vector<f32, 16>,
-        al::vector<f64, 16>,
+    std::variant<al::vector<std::uint8_t, 16>,
+        al::vector<std::int16_t, 16>,
+        al::vector<std::int32_t, 16>,
+        al::vector<float, 16>,
+        al::vector<double, 16>,
         al::vector<MulawSample, 16>,
         al::vector<AlawSample, 16>,
         al::vector<IMA4Data, 16>,
@@ -69,7 +70,14 @@ struct Buffer : BufferStorage {
         return al::intrusive_ptr{this};
     }
 
-    static void SetName(gsl::not_null<al::Context*> context, ALuint id, std::string_view name);
+    Buffer() = default;
+    Buffer(const Buffer&) = delete;
+    Buffer(Buffer&&) = delete;
+    ~Buffer() = default;
+    auto operator=(const Buffer&) -> Buffer& = delete;
+    auto operator=(Buffer&&) -> Buffer& = delete;
+
+    static void SetName(al::Context& context, ALuint id, std::string_view name);
 
     DISABLE_ALLOC
 

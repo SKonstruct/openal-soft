@@ -24,6 +24,8 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <numbers>
 #include <ranges>
 #include <span>
@@ -32,13 +34,21 @@
 #include "alc/effects/base.h"
 #include "core/ambidefs.h"
 #include "core/bufferline.h"
-#include "core/context.h"
-#include "core/device.h"
 #include "core/effects/base.h"
 #include "core/effectslot.h"
 #include "core/filters/biquad.h"
+#include "core/filters/splitter.h"
 #include "core/mixer.h"
 #include "intrusive_ptr.h"
+#include "zudl.hpp"
+
+#if HAVE_CXXMODULES
+import core.context;
+import core.device;
+#else
+#include "core/context.h"
+#include "core/device.h"
+#endif
 
 struct BufferStorage;
 
@@ -69,9 +79,9 @@ alignas(16) constexpr std::array<std::array<float, NumLines>, NumLines> A2B{{
 }};
 
 
-struct DistortionState final : public EffectState {
+struct DistortionState final : EffectState {
     struct OutParams {
-        unsigned mTargetChannel{InvalidChannelIndex.c_val};
+        unsigned mTargetChannel{InvalidChannelIndex};
 
         /* Effect parameters */
         BiquadFilter mLowpass;
@@ -104,9 +114,9 @@ struct DistortionState final : public EffectState {
 
     void deviceUpdate(const DeviceBase *device, const BufferStorage *buffer) override;
     void update(const ContextBase *context, const EffectSlotBase *slot, const EffectProps *props,
-        EffectTarget target) override;
+        EffectTarget target) noexcept NONBLOCKING override;
     void process(size_t samplesToDo, std::span<const FloatBufferLine> samplesIn,
-        std::span<FloatBufferLine> samplesOut) override;
+        std::span<FloatBufferLine> samplesOut) noexcept override;
 };
 
 void DistortionState::deviceUpdate(DeviceBase const *const device, const BufferStorage*)
@@ -136,10 +146,10 @@ void DistortionState::deviceUpdate(DeviceBase const *const device, const BufferS
 }
 
 void DistortionState::update(const ContextBase *context, const EffectSlotBase *slot,
-    const EffectProps *props_, const EffectTarget target)
+    const EffectProps *props_, const EffectTarget target) noexcept NONBLOCKING
 {
-    auto &props = std::get<DistortionProps>(*props_);
-    auto const device = al::get_not_null(context->mDevice);
+    auto &props = IGNORE_FUNCTION_EFFECTS(std::get<DistortionProps>(*props_));
+    auto const &device = context->mDevice;
 
     /* Store waveshaper edge settings. */
     const auto edge = std::min(std::sin(std::numbers::pi_v<float>*0.5f * props.Edge), 0.99f);
@@ -151,7 +161,7 @@ void DistortionState::update(const ContextBase *context, const EffectSlotBase *s
     /* Divide normalized frequency by the amount of oversampling done during
      * processing.
      */
-    auto frequency = static_cast<float>(device->mSampleRate);
+    auto const frequency = static_cast<float>(device.mSampleRate);
     mChans[0].mLowpass.setParamsFromBandwidth(BiquadType::LowPass, cutoff/frequency*0.25f, 1.0f,
         bandwidth);
 
@@ -169,18 +179,18 @@ void DistortionState::update(const ContextBase *context, const EffectSlotBase *s
 
     mOutTarget = target.Main->Buffer;
     target.Main->setAmbiMixParams(slot->Wet, slot->Gain*props.Gain,
-        [this](std::size_t const idx, u8 const outchan, float const outgain)
+        [this](std::size_t const idx, std::uint8_t const outchan, float const outgain)
     {
         if(idx < mChans.size())
         {
-            mChans[idx].mTargetChannel = outchan.c_val;
+            mChans[idx].mTargetChannel = outchan;
             mChans[idx].mTargetGain = outgain;
         }
     });
 
     if(mUpsampler.has_value())
     {
-        auto &upsampler = mUpsampler.value();
+        auto &upsampler = *mUpsampler;
         const auto upmatrix = std::span{AmbiScale::FirstOrderUp};
 
         auto const outgain = slot->Gain * props.Gain;
@@ -194,6 +204,7 @@ void DistortionState::update(const ContextBase *context, const EffectSlotBase *s
 
 void DistortionState::process(const size_t samplesToDo,
     const std::span<const FloatBufferLine> samplesIn, const std::span<FloatBufferLine> samplesOut)
+    noexcept NONBLOCKING
 {
     /* Convert B-Format to A-Format for processing. */
     const auto numInput = std::min(samplesIn.size(), NumLines);
@@ -277,7 +288,7 @@ void DistortionState::process(const size_t samplesToDo,
     /* Now, mix the processed sound data to the output. */
     if(mUpsampler.has_value())
     {
-        auto &upsampler = mUpsampler.value();
+        auto &upsampler = *mUpsampler;
         auto chandata = mChans.begin();
         for(const auto c : std::views::iota(0_uz, NumLines))
         {

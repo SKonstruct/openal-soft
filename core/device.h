@@ -4,17 +4,14 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <concepts>
-#include <functional>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
-#include <ranges>
 #include <span>
 #include <string>
 #include <variant>
 
 #include "alformat.hpp"
-#include "almalloc.h"
-#include "alnumeric.h"
 #include "ambidefs.h"
 #include "atomic.h"
 #include "bitset.hpp"
@@ -27,8 +24,10 @@
 #include "gsl/gsl"
 #include "intrusive_ptr.h"
 #include "mixer/hrtfdefs.h"
-#include "resampler_limits.h"
+#include "mixparams.hpp"
+#include "resampler_limits.hpp"
 #include "vector.h"
+#include "zudl.hpp"
 
 class BFormatDec;
 namespace Bs2b {
@@ -49,34 +48,26 @@ inline constexpr auto DefaultUpdateSize = 512_uz; /* ~10.7ms */
 inline constexpr auto DefaultNumUpdates = 3_uz;
 
 
-enum class DeviceType : u8::value_t {
+enum class DeviceType : std::uint8_t {
     Playback,
     Capture,
     Loopback
 };
 
 
-enum class RenderMode : u8::value_t {
+enum class RenderMode : std::uint8_t {
     Normal,
     Pairwise,
     Hrtf
 };
 
-enum class StereoEncoding : u8::value_t {
+enum class StereoEncoding : std::uint8_t {
     Basic,
     Uhj,
     Hrtf,
     Tsme,
 
     Default = Basic
-};
-
-
-struct InputRemixMap {
-    struct TargetMix { Channel channel; float mix; };
-
-    Channel channel;
-    std::span<TargetMix const> targets;
 };
 
 
@@ -102,58 +93,6 @@ public:
 };
 
 
-inline constexpr auto InvalidChannelIndex = ~0_u8;
-
-struct BFChannelConfig {
-    float Scale;
-    unsigned Index;
-};
-
-struct MixParams {
-    /* Coefficient channel mapping for mixing to the buffer. */
-    std::array<BFChannelConfig, MaxAmbiChannels> AmbiMap{};
-
-    std::span<FloatBufferLine> Buffer;
-
-    /**
-     * Helper to set an identity/pass-through panning for ambisonic mixing. The
-     * source is expected to be a 3D ACN/N3D ambisonic buffer, and for each
-     * channel [0...count), the given functor is called with the source channel
-     * index, destination channel index, and the gain for that channel. If the
-     * destination channel is InvalidChannelIndex, the given source channel is
-     * not used for output.
-     */
-    template<std::invocable<std::size_t, u8, float> F>
-    void setAmbiMixParams(MixParams const &inmix, float const gainbase, F func) const
-    {
-        auto const numIn = inmix.Buffer.size();
-        auto const numOut = Buffer.size();
-        for(auto const i : std::views::iota(0_uz, numIn))
-        {
-            auto idx = InvalidChannelIndex;
-            auto gain = 0.0f;
-
-            for(auto const j : std::views::iota(0_uz, numOut))
-            {
-                if(AmbiMap[j].Index == inmix.AmbiMap[i].Index)
-                {
-                    idx = u8{static_cast<u8::value_t>(j)};
-                    gain = AmbiMap[j].Scale * gainbase;
-                    break;
-                }
-            }
-            std::invoke(func, i, idx, gain);
-        }
-    }
-};
-
-struct RealMixParams {
-    std::span<InputRemixMap const> RemixMap;
-    std::array<u8, MaxChannels> ChannelIndex{};
-
-    std::span<FloatBufferLine> Buffer;
-};
-
 using AmbiRotateMatrix = std::array<std::array<float, MaxAmbiChannels>, MaxAmbiChannels>;
 
 
@@ -170,7 +109,7 @@ struct UhjPostProcess {
 };
 
 struct TsmePostProcess {
-    std::unique_ptr<EncoderBase> mUhjEncoder;
+    std::unique_ptr<EncoderBase> mTsmeEncoder;
 };
 
 struct StablizerPostProcess {
@@ -192,7 +131,7 @@ using PostProcess = std::variant<std::monostate,
     Bs2bPostProcess>;
 
 
-enum class DeviceFlag : u8::value_t {
+enum class DeviceFlag : std::uint8_t {
     // Frequency was requested by the app or config file
     FrequencyRequest,
     // Channel configuration was requested by the app or config file
@@ -215,7 +154,7 @@ enum class DeviceFlag : u8::value_t {
     MaxValue = Virtualization
 };
 
-enum class DeviceState : u8::value_t {
+enum class DeviceState : std::uint8_t {
     Unprepared,
     Configured,
     Playing
@@ -326,7 +265,7 @@ struct DeviceBase {
     al::atomic_unique_ptr<ContextArray> mContexts;
 
     /** Returns the number of contexts remaining on the device. */
-    [[nodiscard]] auto removeContext(ContextBase *context) -> usize;
+    [[nodiscard]] auto removeContext(ContextBase *context) -> std::size_t;
 
     [[nodiscard]]
     auto bytesFromFmt() const noexcept -> unsigned { return BytesFromDevFmt(FmtType); }
@@ -360,7 +299,7 @@ struct DeviceBase {
     }
 
     /** Waits for the mixer to not be mixing or updating the clock. */
-    [[nodiscard]] auto waitForMix() const noexcept -> unsigned
+    [[nodiscard]] auto waitForMix() const noexcept BLOCKING -> unsigned
     {
         auto refcount = mMixCount.load(std::memory_order_acquire);
         while((refcount&1)) refcount = mMixCount.load(std::memory_order_acquire);
@@ -391,19 +330,20 @@ struct DeviceBase {
     void Process(StablizerPostProcess const &proc, std::size_t SamplesToDo);
     void Process(Bs2bPostProcess const &proc, std::size_t SamplesToDo);
 
-    void renderSamples(std::span<void*const> outBuffers, unsigned numSamples);
-    void renderSamples(void *outBuffer, unsigned numSamples, std::size_t frameStep);
+    void renderSamples(std::span<void*const> outBuffers, unsigned numSamples) noexcept NONBLOCKING;
+    void renderSamples(void *outBuffer, unsigned numSamples, std::size_t frameStep) noexcept
+        NONBLOCKING;
 
     /* Caller must lock the device state, and the mixer must not be running. */
-    void doDisconnect(std::string&& msg);
-
     template<typename ...Args>
     void handleDisconnect(al::format_string<Args...> fmt, Args&& ...args)
-    { doDisconnect(al::format(std::move(fmt), std::forward<Args>(args)...)); }
+    { doDisconnect(fmt.get(), al::make_format_args(args...)); }
 
 private:
     [[nodiscard]]
-    auto renderSamples(unsigned numSamples) -> unsigned;
+    auto renderSamples(unsigned numSamples) noexcept NONBLOCKING -> unsigned;
+
+    void doDisconnect(al::string_view fmt, al::format_args&& args);
 
 protected:
     explicit DeviceBase(DeviceType type);

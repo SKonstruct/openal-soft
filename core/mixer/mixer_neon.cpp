@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <limits>
 #include <span>
 #include <variant>
@@ -13,11 +14,16 @@
 #include "core/bufferline.h"
 #include "core/cubic_defs.h"
 #include "core/mixer/hrtfdefs.h"
-#include "core/resampler_limits.h"
+#include "core/resampler_limits.hpp"
 #include "defs.h"
-#include "gsl/gsl"
 #include "hrtfbase.h"
 #include "opthelpers.h"
+
+#if HAVE_CXXMODULES
+import gsl;
+#else
+#include "gsl/gsl"
+#endif
 
 
 #if defined(__GNUC__) && !defined(__clang__) && !defined(__ARM_NEON)
@@ -333,15 +339,15 @@ void Resample_FastBSinc_NEON(InterpState const *const state, std::span<float con
     unsigned frac, unsigned const increment, std::span<float> const dst) noexcept NONBLOCKING
 {
     auto const &bsinc = *gsl::not_null{std::get_if<BsincState>(state)};
-    auto const m = std::size_t{bsinc.m.c_val};
+    auto const m = std::size_t{bsinc.m};
     ASSUME(m > 0);
     ASSUME(m <= MaxResamplerPadding);
     ASSUME(frac < MixerFracOne);
 
     auto const filter = bsinc.filter.first(2_uz*BSincPhaseCount*m);
 
-    ASSUME(bsinc.l.c_val <= MaxResamplerEdge);
-    auto pos = std::size_t{MaxResamplerEdge-bsinc.l.c_val};
+    ASSUME(bsinc.l <= MaxResamplerEdge);
+    auto pos = std::size_t{MaxResamplerEdge-bsinc.l};
     std::ranges::generate(dst, [&pos,&frac,src,increment,m,filter]() -> float
     {
         // Calculate the phase index and factor.
@@ -380,15 +386,15 @@ void Resample_BSinc_NEON(InterpState const *const state, std::span<float const> 
 {
     auto const &bsinc = *gsl::not_null{std::get_if<BsincState>(state)};
     auto const sf4 = vdupq_n_f32(bsinc.sf);
-    auto const m = std::size_t{bsinc.m.c_val};
+    auto const m = std::size_t{bsinc.m};
     ASSUME(m > 0);
     ASSUME(m <= MaxResamplerPadding);
     ASSUME(frac < MixerFracOne);
 
     auto const filter = bsinc.filter.first(4_uz*BSincPhaseCount*m);
 
-    ASSUME(bsinc.l.c_val <= MaxResamplerEdge);
-    auto pos = std::size_t{MaxResamplerEdge-bsinc.l.c_val};
+    ASSUME(bsinc.l <= MaxResamplerEdge);
+    auto pos = std::size_t{MaxResamplerEdge-bsinc.l};
     std::ranges::generate(dst, [&pos,&frac,src,increment,sf4,m,filter]() -> float
     {
         // Calculate the phase index and factor.

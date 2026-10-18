@@ -1,7 +1,7 @@
 #ifndef BACKENDS_PORTAUDIO_HPP
 #define BACKENDS_PORTAUDIO_HPP
 
-#include "base.h"
+#include "base.hpp"
 
 struct PortBackendFactory final : BackendFactory {
     auto init() -> bool final;
@@ -10,7 +10,7 @@ struct PortBackendFactory final : BackendFactory {
 
     auto enumerate(BackendType type) -> std::vector<std::string> final;
 
-    auto createBackend(gsl::not_null<DeviceBase*> device, BackendType type) -> BackendPtr final;
+    auto createBackend(DeviceBase &device, BackendType type) -> BackendPtr final;
 
     static auto getFactory() -> BackendFactory&;
 };

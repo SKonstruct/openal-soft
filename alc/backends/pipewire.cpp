@@ -20,14 +20,14 @@
 
 #include "config.h"
 
-#include "pipewire.h"
+#include "pipewire.hpp"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cinttypes>
 #include <cmath>
-#include <cstdio>
+#include <concepts>
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
@@ -45,15 +45,9 @@
 #include <utility>
 
 #include "alc/alconfig.h"
-#include "alc/backends/base.h"
-#include "alformat.hpp"
-#include "alstring.h"
-#include "core/devformat.h"
-#include "core/device.h"
-#include "core/helpers.h"
+#include "alnumeric.h"
+#include "dlopennote.h"
 #include "dynload.h"
-#include "fmt/format.h"
-#include "fmt/ranges.h"
 #include "opthelpers.h"
 #include "pragmadefs.h"
 #include "ringbuffer.h"
@@ -134,13 +128,31 @@ constexpr auto PwIdAny = PW_ID_ANY;
 DIAGNOSTIC_POP;
 
 #if HAVE_CXXMODULES
-import format.types;
+import alstring;
+import backends.exception;
+import core.device;
+import core.helpers;
+import fmtlib;
+import format;
 import gsl;
 import logging;
+import spanstream;
+import types;
+import zstring_view;
 #else
+#include "alc/backends/exception.hpp"
+#include "alformat.hpp"
 #include "alformattypes.hpp"
+#include "alformatzsv.hpp"
+#include "alstring.h"
+#include "core/device.h"
+#include "core/helpers.hpp"
 #include "core/logging.h"
+#include "fmt/format.h"
+#include "fmt/ranges.h"
 #include "gsl/gsl"
+#include "spanstream.hpp"
+#include "zstring_view.hpp"
 #endif
 
 namespace {
@@ -230,17 +242,21 @@ using std::chrono::nanoseconds;
 auto *gConfigFileName = gsl::czstring{};
 
 
-auto check_version(gsl::czstring const version) -> bool
+auto check_version(al::zstring_view const version) -> bool
 {
     /* There doesn't seem to be a function to get the version as an integer, so
      * instead we have to parse the string, which hopefully won't break in the
      * future.
      */
+    auto verstream = al::ispanstream{version};
     auto major = int{};
+    if((verstream >> major).get() != '.')
+        return false;
     auto minor = int{};
+    if((verstream >> minor).get() != '.')
+        return false;
     auto revision = int{};
-    /* NOLINTNEXTLINE(cert-err34-c,cppcoreguidelines-pro-type-vararg) */
-    if(auto const ret = sscanf(version, "%d.%d.%d", &major, &minor, &revision); ret != 3)
+    if((verstream >> revision).fail())
         return false;
 
     /* client-rt.conf is deprecated since PipeWire 1.3.81, and we should just
@@ -255,46 +271,46 @@ auto check_version(gsl::czstring const version) -> bool
 
 #if HAVE_DYNLOAD
 #define PWIRE_FUNCS(MAGIC)                                                    \
-    MAGIC(pw_context_connect)                                                 \
-    MAGIC(pw_context_destroy)                                                 \
-    MAGIC(pw_context_new)                                                     \
-    MAGIC(pw_core_disconnect)                                                 \
-    MAGIC(pw_get_library_version)                                             \
-    MAGIC(pw_init)                                                            \
-    MAGIC(pw_properties_free)                                                 \
-    MAGIC(pw_properties_new)                                                  \
-    MAGIC(pw_properties_set)                                                  \
-    MAGIC(pw_properties_setf)                                                 \
-    MAGIC(pw_proxy_add_object_listener)                                       \
-    MAGIC(pw_proxy_destroy)                                                   \
-    MAGIC(pw_proxy_get_user_data)                                             \
-    MAGIC(pw_stream_add_listener)                                             \
-    MAGIC(pw_stream_connect)                                                  \
-    MAGIC(pw_stream_dequeue_buffer)                                           \
-    MAGIC(pw_stream_destroy)                                                  \
-    MAGIC(pw_stream_get_state)                                                \
-    MAGIC(pw_stream_new)                                                      \
-    MAGIC(pw_stream_queue_buffer)                                             \
-    MAGIC(pw_stream_set_active)                                               \
-    MAGIC(pw_thread_loop_new)                                                 \
-    MAGIC(pw_thread_loop_destroy)                                             \
-    MAGIC(pw_thread_loop_get_loop)                                            \
-    MAGIC(pw_thread_loop_start)                                               \
-    MAGIC(pw_thread_loop_stop)                                                \
-    MAGIC(pw_thread_loop_lock)                                                \
-    MAGIC(pw_thread_loop_wait)                                                \
-    MAGIC(pw_thread_loop_signal)                                              \
-    MAGIC(pw_thread_loop_unlock)
+    MAGIC(pw_context_connect);                                                \
+    MAGIC(pw_context_destroy);                                                \
+    MAGIC(pw_context_new);                                                    \
+    MAGIC(pw_core_disconnect);                                                \
+    MAGIC(pw_get_library_version);                                            \
+    MAGIC(pw_init);                                                           \
+    MAGIC(pw_properties_free);                                                \
+    MAGIC(pw_properties_new);                                                 \
+    MAGIC(pw_properties_set);                                                 \
+    MAGIC(pw_properties_setf);                                                \
+    MAGIC(pw_proxy_add_object_listener);                                      \
+    MAGIC(pw_proxy_destroy);                                                  \
+    MAGIC(pw_proxy_get_user_data);                                            \
+    MAGIC(pw_stream_add_listener);                                            \
+    MAGIC(pw_stream_connect);                                                 \
+    MAGIC(pw_stream_dequeue_buffer);                                          \
+    MAGIC(pw_stream_destroy);                                                 \
+    MAGIC(pw_stream_get_state);                                               \
+    MAGIC(pw_stream_new);                                                     \
+    MAGIC(pw_stream_queue_buffer);                                            \
+    MAGIC(pw_stream_set_active);                                              \
+    MAGIC(pw_thread_loop_new);                                                \
+    MAGIC(pw_thread_loop_destroy);                                            \
+    MAGIC(pw_thread_loop_get_loop);                                           \
+    MAGIC(pw_thread_loop_start);                                              \
+    MAGIC(pw_thread_loop_stop);                                               \
+    MAGIC(pw_thread_loop_lock);                                               \
+    MAGIC(pw_thread_loop_wait);                                               \
+    MAGIC(pw_thread_loop_signal);                                             \
+    MAGIC(pw_thread_loop_unlock);
 #if PW_CHECK_VERSION(0,3,50)
 #define PWIRE_FUNCS2(MAGIC)                                                   \
-    MAGIC(pw_stream_get_time_n)
+    MAGIC(pw_stream_get_time_n);
 #else
 #define PWIRE_FUNCS2(MAGIC)                                                   \
-    MAGIC(pw_stream_get_time)
+    MAGIC(pw_stream_get_time);
 #endif
 
-void *pwire_handle;
-#define MAKE_FUNC(f) decltype(f) * p##f;
+auto pwire_handle = LibHandle{};
+#define MAKE_FUNC(f) decltype(f)* p##f{}
 PWIRE_FUNCS(MAKE_FUNC)
 PWIRE_FUNCS2(MAKE_FUNC)
 #undef MAKE_FUNC
@@ -313,7 +329,7 @@ auto pwire_load() -> bool
     if(pwire_handle)
         return true;
 
-    auto *const pwire_lib = gsl::czstring{PWIRE_LIB};
+    auto constexpr pwire_lib = al::zstring_view{PWIRE_LIB};
     if(auto const libresult = LoadLib(pwire_lib))
         pwire_handle = libresult.value();
     else
@@ -322,21 +338,18 @@ auto pwire_load() -> bool
         return false;
     }
 
-    static constexpr auto load_func = [](auto *&func, gsl::czstring const name) -> bool
+    static constexpr auto load_sym = []<typename T>(T *&func, al::zstring_view const name) -> bool
     {
-        using func_t = std::remove_reference_t<decltype(func)>;
-        auto const funcresult = GetSymbol(pwire_handle, name);
-        if(!funcresult)
-        {
-            WARN("Failed to load function {}: {}", name, funcresult.error());
-            return false;
-        }
-        /* NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) */
-        func = reinterpret_cast<func_t>(funcresult.value());
-        return true;
+        return GetSymbolAddress<T>(pwire_handle, name)
+            .transform_error([name](std::string_view const err) {
+                WARN("Failed to load symbol {}: {}", name, err);
+                return false;
+            })
+            .transform([&func](T *addr) { func = addr; })
+            .has_value();
     };
     auto ok = true;
-#define LOAD_FUNC(f) ok &= load_func(p##f, #f);
+#define LOAD_FUNC(f) ok &= load_sym(p##f, #f)
     PWIRE_FUNCS(LOAD_FUNC)
     PWIRE_FUNCS2(LOAD_FUNC)
 #undef LOAD_FUNC
@@ -459,6 +472,34 @@ auto as(pw_metadata *mdata) noexcept -> pw_proxy* { return reinterpret_cast<pw_p
 /* NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast) */
 
 
+[[nodiscard]]
+auto get_json_string(spa_json *const iter)
+{
+    auto str = std::optional<std::string>{};
+
+    auto val = gsl::czstring{};
+    auto const len = spa_json_next(iter, &val);
+    if(len <= 0) return str;
+
+    try {
+        str.emplace(gsl::narrow<std::size_t>(len)+1, '\0');
+        auto const err = spa_json_parse_stringn(val, len, str->data(),
+            al::saturate_cast<int>(str->size()));
+        if(err <= 0)
+        {
+            ERR("Error parsing JSON string: {} ({})", std::generic_category().message(-err), err);
+            str.reset();
+        }
+        else if(auto const epos = str->find('\0'); epos < str->size())
+            str->resize(epos);
+    }
+    catch(std::exception& e) {
+        ERR("Exception parsing JSON string: {}", e.what());
+        str.reset();
+    }
+    return str;
+}
+
 using PwContextPtr = std::unique_ptr<pw_context, decltype([](pw_context *context)
     { pw_context_destroy(context); })>;
 
@@ -537,7 +578,7 @@ struct MainloopUniqueLock : std::unique_lock<ThreadMainloop> {
     auto wait() const -> void
     { pw_thread_loop_wait(mutex()->mLoop); }
 
-    template<typename Predicate>
+    template<std::predicate Predicate>
     auto wait(Predicate done_waiting) const -> void
     { while(!done_waiting()) wait(); }
 };
@@ -587,7 +628,7 @@ struct DeviceNode {
     void parsePositions(const spa_pod *value, bool force_update) noexcept;
     void parseChannelCount(const spa_pod *value, bool force_update) noexcept;
 
-    void callEvent(alc::EventType const type, std::string_view const message) const
+    void callEvent(alc::EventType const type, al::zstring_view const message) const
     {
         /* Source nodes aren't recognized for playback, only Sink and Duplex
          * nodes are. All node types are recognized for capture.
@@ -692,6 +733,7 @@ struct EventManager {
     static void RemoveDevice(uint32_t id);
     static auto GetDeviceList() noexcept { return std::span{sList}; }
 
+    EventManager() noexcept = default;
     ~EventManager() { if(mLoop) mLoop.stop(); }
 
     auto init() -> bool;
@@ -756,7 +798,7 @@ private:
 };
 using EventWatcherLockGuard = std::lock_guard<EventManager>;
 
-auto gEventHandler = EventManager{}; /* NOLINT(cert-err58-cpp) */
+auto gEventHandler = EventManager{};
 
 
 auto EventManager::AddDevice(uint32_t const id) -> DeviceNode&
@@ -830,6 +872,12 @@ constexpr auto X714Map = std::array{
     SPA_AUDIO_CHANNEL_FL, SPA_AUDIO_CHANNEL_FR, SPA_AUDIO_CHANNEL_FC, SPA_AUDIO_CHANNEL_LFE,
     SPA_AUDIO_CHANNEL_RL, SPA_AUDIO_CHANNEL_RR, SPA_AUDIO_CHANNEL_SL, SPA_AUDIO_CHANNEL_SR,
     SPA_AUDIO_CHANNEL_TFL, SPA_AUDIO_CHANNEL_TFR, SPA_AUDIO_CHANNEL_TRL, SPA_AUDIO_CHANNEL_TRR
+};
+/* Unpositioned channels, as used by "Pro Audio" profiles. Treated as stereo,
+ * with the stream still using FL and FR like other stereo apps.
+ */
+constexpr auto AuxStereoMap = std::array{
+    SPA_AUDIO_CHANNEL_AUX0, SPA_AUDIO_CHANNEL_AUX1
 };
 
 /**
@@ -955,7 +1003,8 @@ void DeviceNode::parsePositions(spa_pod const *value, bool const force_update) n
         }
         else if(MatchChannelMap(chanmap, QuadMap))
             mChannels = DevFmtQuad;
-        else if(MatchChannelMap(chanmap, StereoMap))
+        else if(MatchChannelMap(chanmap, StereoMap)
+            || MatchChannelMap(chanmap, AuxStereoMap))
             mChannels = DevFmtStereo;
         else
             mChannels = DevFmtMono;
@@ -1019,12 +1068,12 @@ void NodeProxy::infoCallback(void*, const pw_node_info *info) noexcept
         const auto className = std::string_view{media_class};
 
         auto ntype = NodeType{};
-        if(al::case_compare(className, GetAudioSinkClassName()) == 0)
+        if(is_eq(al::case_compare(className, GetAudioSinkClassName())))
             ntype = NodeType::Sink;
-        else if(al::case_compare(className, GetAudioSourceClassName()) == 0
-            || al::case_compare(className, GetAudioSourceVirtualClassName()) == 0)
+        else if(is_eq(al::case_compare(className, GetAudioSourceClassName()))
+            or is_eq(al::case_compare(className, GetAudioSourceVirtualClassName())))
             ntype = NodeType::Source;
-        else if(al::case_compare(className, GetAudioDuplexClassName()) == 0)
+        else if(is_eq(al::case_compare(className, GetAudioDuplexClassName())))
             ntype = NodeType::Duplex;
         else
         {
@@ -1113,8 +1162,8 @@ void NodeProxy::infoCallback(void*, const pw_node_info *info) noexcept
         }
         node.mDevName = devName ? devName : "";
         node.mType = ntype;
-        node.mIsHeadphones = form_factor && (al::case_compare(form_factor, "headphones"sv) == 0
-            || al::case_compare(form_factor, "headset"sv) == 0);
+        node.mIsHeadphones = form_factor and (is_eq(al::case_compare(form_factor, "headphones"sv))
+            or is_eq(al::case_compare(form_factor, "headset"sv)));
 
         if(notifyAdd)
         {
@@ -1151,8 +1200,8 @@ void NodeProxy::paramCallback(int, uint32_t const id, uint32_t, uint32_t,
 }
 
 
-auto MetadataProxy::propertyCallback(void*, uint32_t id, gsl::czstring key, gsl::czstring type,
-    gsl::czstring value) noexcept -> int
+auto MetadataProxy::propertyCallback(void*, uint32_t const id, gsl::czstring const key,
+    gsl::czstring const type, gsl::czstring const value) noexcept -> int
 {
     if(id != PW_ID_CORE)
         return 0;
@@ -1178,31 +1227,17 @@ auto MetadataProxy::propertyCallback(void*, uint32_t id, gsl::czstring key, gsl:
         return 0;
     }
 
-    auto it = std::array<spa_json, 2>{};
-    spa_json_init(it.data(), value, strlen(value));
-    if(spa_json_enter_object(&std::get<0>(it), &std::get<1>(it)) <= 0)
+    auto jsonroot = spa_json{};
+    auto jsonit = spa_json{};
+    spa_json_init(&jsonroot, value, strlen(value));
+    if(spa_json_enter_object(&jsonroot, &jsonit) <= 0)
         return 0;
 
-    static constexpr auto get_json_string = [](spa_json *const iter)
-    {
-        auto str = std::optional<std::string>{};
-
-        const char *val{};
-        const auto len = spa_json_next(iter, &val);
-        if(len <= 0) return str;
-
-        str.emplace(gsl::narrow_cast<unsigned>(len), '\0');
-        if(spa_json_parse_string(val, len, str->data()) <= 0)
-            str.reset();
-        else while(!str->empty() && str->back() == '\0')
-            str->pop_back();
-        return str;
-    };
-    while(auto propKey = get_json_string(&std::get<1>(it)))
+    while(auto propKey = get_json_string(&jsonit))
     {
         if("name"sv == *propKey)
         {
-            auto propValue = get_json_string(&std::get<1>(it));
+            auto propValue = get_json_string(&jsonit);
             if(!propValue) break;
 
             TRACE("Got default {} device \"{}\"", isCapture ? "capture" : "playback",
@@ -1211,9 +1246,9 @@ auto MetadataProxy::propertyCallback(void*, uint32_t id, gsl::czstring key, gsl:
             {
                 if(gEventHandler.mInitDone.load(std::memory_order_relaxed))
                 {
-                    auto *entry = EventManager::FindDevice(*propValue);
+                    auto const *const entry = EventManager::FindDevice(*propValue);
                     const auto message = al::format("Default playback device changed: {}",
-                        entry ? entry->mName : std::string{});
+                        entry ? std::string_view{entry->mName} : std::string_view{});
                     alc::Event(alc::EventType::DefaultDeviceChanged, alc::DeviceType::Playback,
                         message);
                 }
@@ -1223,9 +1258,9 @@ auto MetadataProxy::propertyCallback(void*, uint32_t id, gsl::czstring key, gsl:
             {
                 if(gEventHandler.mInitDone.load(std::memory_order_relaxed))
                 {
-                    auto *entry = EventManager::FindDevice(*propValue);
+                    auto const *const entry = EventManager::FindDevice(*propValue);
                     const auto message = al::format("Default capture device changed: {}",
-                        entry ? entry->mName : std::string{});
+                        entry ? std::string_view{entry->mName} : std::string_view{});
                     alc::Event(alc::EventType::DefaultDeviceChanged, alc::DeviceType::Capture,
                         message);
                 }
@@ -1234,8 +1269,8 @@ auto MetadataProxy::propertyCallback(void*, uint32_t id, gsl::czstring key, gsl:
         }
         else
         {
-            const char *v{};
-            if(spa_json_next(&std::get<1>(it), &v) <= 0)
+            auto v = gsl::czstring{};
+            if(spa_json_next(&jsonit, &v) <= 0)
                 break;
         }
     }
@@ -1341,10 +1376,10 @@ void EventManager::addCallback(uint32_t const id, uint32_t, gsl::czstring const 
         const auto className = std::string_view{media_class};
 
         /* Specifically, audio sinks and sources (and duplexes). */
-        const auto isGood = al::case_compare(className, GetAudioSinkClassName()) == 0
-            || al::case_compare(className, GetAudioSourceClassName()) == 0
-            || al::case_compare(className, GetAudioSourceVirtualClassName()) == 0
-            || al::case_compare(className, GetAudioDuplexClassName()) == 0;
+        const auto isGood = is_eq(al::case_compare(className, GetAudioSinkClassName()))
+            or is_eq(al::case_compare(className, GetAudioSourceClassName()))
+            or is_eq(al::case_compare(className, GetAudioSourceVirtualClassName()))
+            or is_eq(al::case_compare(className, GetAudioDuplexClassName()));
         if(!isGood)
         {
             if(!al::contains(className, "/Video"sv) && !className.starts_with("Stream/"sv))
@@ -1408,7 +1443,7 @@ void EventManager::removeCallback(uint32_t const id) noexcept
     RemoveDevice(id);
 
     auto node_end = std::ranges::remove_if(mNodeList, [id](NodeProxy const &node) noexcept
-    { return node.mId == id; }, &std::unique_ptr<NodeProxy>::operator*);
+    { return node.mId == id; }, al::dereference{});
     mNodeList.erase(node_end.begin(), node_end.end());
 
     if(mDefaultMetadata && mDefaultMetadata->mId == id)
@@ -1431,16 +1466,16 @@ void EventManager::coreCallback(uint32_t const id, int const seq) noexcept
 
 
 enum use_f32p_e : bool { UseDevType=false, ForceF32Planar=true };
-auto make_spa_info(DeviceBase *const device, bool const is51rear, use_f32p_e const use_f32p)
+auto make_spa_info(DeviceBase &device, bool const is51rear, use_f32p_e const use_f32p)
     -> spa_audio_info_raw
 {
     auto info = spa_audio_info_raw{};
     if(use_f32p)
     {
-        device->FmtType = DevFmtFloat;
+        device.FmtType = DevFmtFloat;
         info.format = SPA_AUDIO_FORMAT_F32P;
     }
-    else switch(device->FmtType)
+    else switch(device.FmtType)
     {
     case DevFmtByte: info.format = SPA_AUDIO_FORMAT_S8; break;
     case DevFmtUByte: info.format = SPA_AUDIO_FORMAT_U8; break;
@@ -1451,10 +1486,10 @@ auto make_spa_info(DeviceBase *const device, bool const is51rear, use_f32p_e con
     case DevFmtFloat: info.format = SPA_AUDIO_FORMAT_F32; break;
     }
 
-    info.rate = device->mSampleRate;
+    info.rate = device.mSampleRate;
 
     auto map = std::span<const spa_audio_channel>{};
-    switch(device->FmtChans)
+    switch(device.FmtChans)
     {
     case DevFmtMono: map = MonoMap; break;
     case DevFmtStereo: map = StereoMap; break;
@@ -1470,7 +1505,7 @@ auto make_spa_info(DeviceBase *const device, bool const is51rear, use_f32p_e con
     case DevFmtX7144:
     case DevFmtAmbi3D:
         info.flags |= SPA_AUDIO_FLAG_UNPOSITIONED;
-        info.channels = device->channelsFromFmt();
+        info.channels = device.channelsFromFmt();
         break;
     }
     if(!map.empty())
@@ -1483,16 +1518,6 @@ auto make_spa_info(DeviceBase *const device, bool const is51rear, use_f32p_e con
 }
 
 class PipeWirePlayback final : public BackendBase {
-    void stateChangedCallback(pw_stream_state old, pw_stream_state state, gsl::czstring error) const noexcept;
-    void ioChangedCallback(uint32_t id, void *area, uint32_t size) noexcept;
-    void outputCallback() noexcept;
-
-    void open(std::string_view name) override;
-    auto reset() -> bool override;
-    void start() override;
-    void stop() override;
-    auto getClockLatency() -> ClockLatency override;
-
     u64 mTargetId{PwIdAny};
     nanoseconds mTimeBase{0};
     ThreadMainloop mLoop;
@@ -1503,15 +1528,24 @@ class PipeWirePlayback final : public BackendBase {
     spa_io_rate_match *mRateMatch{};
     std::vector<void*> mChannelPtrs;
 
+    auto stateChangedCallback(pw_stream_state old, pw_stream_state state, gsl::czstring error)
+        const noexcept -> void;
+    auto ioChangedCallback(uint32_t id, void *area, uint32_t size) noexcept -> void;
+    auto outputCallback() noexcept NONBLOCKING -> void;
+
 public:
-    explicit PipeWirePlayback(gsl::not_null<DeviceBase*> const device) noexcept
-        : BackendBase{device}
-    { }
-    ~PipeWirePlayback() final
+    using BackendBase::BackendBase;
+    ~PipeWirePlayback() override
     {
         /* Stop the mainloop so the stream can be properly destroyed. */
         if(mLoop) mLoop.stop();
     }
+
+    auto open(std::string_view name) -> void override;
+    auto reset() -> bool override;
+    auto start() -> void override;
+    auto stop() -> void override;
+    auto getClockLatency() -> ClockLatency override;
 };
 
 
@@ -1533,9 +1567,9 @@ void PipeWirePlayback::ioChangedCallback(uint32_t const id, void *const area, ui
     }
 }
 
-void PipeWirePlayback::outputCallback() noexcept
+void PipeWirePlayback::outputCallback() noexcept NONBLOCKING
 {
-    auto *const pw_buf = pw_stream_dequeue_buffer(mStream.get());
+    auto *const pw_buf = IGNORE_FUNCTION_EFFECTS( pw_stream_dequeue_buffer(mStream.get()); )
     if(!pw_buf) [[unlikely]] return;
 
     auto const datas = std::span{pw_buf->buffer->datas,
@@ -1552,7 +1586,7 @@ void PipeWirePlayback::outputCallback() noexcept
     auto length = mRateMatch ? uint32_t{mRateMatch->size} : uint32_t{0};
 #endif
     /* If no length is specified, use the device's update size as a fallback. */
-    if(!length) [[unlikely]] length = mDevice->mUpdateSize;
+    if(!length) [[unlikely]] length = mDevice.mUpdateSize;
 
     /* For planar formats, each datas[] seems to contain one channel, so store
      * the pointers in an array. Limit the render length in case the available
@@ -1571,10 +1605,10 @@ void PipeWirePlayback::outputCallback() noexcept
         data.chunk->size   = length * uint32_t{sizeof(float)};
     }
 
-    mDevice->renderSamples(mChannelPtrs, length);
+    mDevice.renderSamples(mChannelPtrs, length);
 
     pw_buf->size = length;
-    pw_stream_queue_buffer(mStream.get(), pw_buf);
+    IGNORE_FUNCTION_EFFECTS( pw_stream_queue_buffer(mStream.get(), pw_buf); )
 }
 
 
@@ -1662,13 +1696,13 @@ auto PipeWirePlayback::reset() -> bool
         mStream = nullptr;
     }
     mRateMatch = nullptr;
-    mTimeBase = mDevice->getClockTime();
+    mTimeBase = mDevice.getClockTime();
 
     /* If connecting to a specific device, update various device parameters to
      * match its format.
      */
     auto is51rear = false;
-    mDevice->mFlags.reset(DeviceFlag::DirectEar);
+    mDevice.mFlags.reset(DeviceFlag::DirectEar);
     if(mTargetId != PwIdAny)
     {
         const auto evtlock = EventWatcherLockGuard{gEventHandler};
@@ -1677,11 +1711,11 @@ auto PipeWirePlayback::reset() -> bool
         const auto match = std::ranges::find(devlist, mTargetId, &DeviceNode::mSerial);
         if(match != devlist.end())
         {
-            if(!mDevice->mFlags.test(DeviceFlag::FrequencyRequest) && match->mSampleRate > 0)
+            if(!mDevice.mFlags.test(DeviceFlag::FrequencyRequest) && match->mSampleRate > 0)
             {
                 /* Scale the update size if the sample rate changes. */
                 const auto scale = gsl::narrow_cast<double>(match->mSampleRate)
-                    / mDevice->mSampleRate;
+                    / mDevice.mSampleRate;
 
                 /* Don't scale down power-of-two sizes unless it would be more
                  * than halfway to the next lower power-of-two. PipeWire uses
@@ -1692,22 +1726,22 @@ auto PipeWirePlayback::reset() -> bool
                  * be scaled to 470 samples, which gets rounded down to 256
                  * when 512 would be closer to the requested size.
                  */
-                if(scale < 0.75 && std::popcount(mDevice->mUpdateSize) == 1)
+                if(scale < 0.75 && std::popcount(mDevice.mUpdateSize) == 1)
                 {
-                    const auto updatesize = std::round(mDevice->mUpdateSize * scale);
-                    const auto buffersize = std::round(mDevice->mBufferSize * scale);
+                    const auto updatesize = std::round(mDevice.mUpdateSize * scale);
+                    const auto buffersize = std::round(mDevice.mBufferSize * scale);
 
-                    mDevice->mUpdateSize = gsl::narrow_cast<uint32_t>(std::clamp(updatesize, 64.0,
+                    mDevice.mUpdateSize = gsl::narrow_cast<uint32_t>(std::clamp(updatesize, 64.0,
                         8192.0));
-                    mDevice->mBufferSize = gsl::narrow_cast<uint32_t>(std::max(buffersize, 128.0));
+                    mDevice.mBufferSize = gsl::narrow_cast<uint32_t>(std::max(buffersize, 128.0));
                 }
-                mDevice->mSampleRate = match->mSampleRate;
+                mDevice.mSampleRate = match->mSampleRate;
             }
-            if(!mDevice->mFlags.test(DeviceFlag::ChannelsRequest)
+            if(!mDevice.mFlags.test(DeviceFlag::ChannelsRequest)
                 && match->mChannels != InvalidChannelConfig)
-                mDevice->FmtChans = match->mChannels;
+                mDevice.FmtChans = match->mChannels;
             if(match->mChannels == DevFmtStereo && match->mIsHeadphones)
-                mDevice->mFlags.set(DeviceFlag::DirectEar);
+                mDevice.mFlags.set(DeviceFlag::DirectEar);
             is51rear = match->mIs51Rear;
         }
     }
@@ -1738,9 +1772,9 @@ auto PipeWirePlayback::reset() -> bool
         throw al::backend_exception{al::backend_error::DeviceError,
             "Failed to create PipeWire stream properties (errno: {})", errno};
 
-    pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", mDevice->mUpdateSize,
-        mDevice->mSampleRate);
-    pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", mDevice->mSampleRate);
+    pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", mDevice.mUpdateSize,
+        mDevice.mSampleRate);
+    pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", mDevice.mSampleRate);
 #ifdef PW_KEY_TARGET_OBJECT
     pw_properties_set(props, PW_KEY_TARGET_OBJECT, std::to_string(mTargetId.c_val).c_str());
 #else
@@ -1764,14 +1798,14 @@ auto PipeWirePlayback::reset() -> bool
         ret.io_changed = [](void *const data, uint32_t const id, void *const area,
             uint32_t const size) noexcept -> void
         { static_cast<PipeWirePlayback*>(data)->ioChangedCallback(id, area, size); };
-        ret.process = [](void *const data) noexcept -> void
+        ret.process = [](void *const data) noexcept NONBLOCKING -> void
         { static_cast<PipeWirePlayback*>(data)->outputCallback(); };
         return ret;
     });
     pw_stream_add_listener(mStream.get(), &mStreamListener, &streamEvents, this);
 
     auto flags = PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_INACTIVE | PW_STREAM_FLAG_MAP_BUFFERS;
-    if(GetConfigValueBool(mDevice->mDeviceName, "pipewire", "rt-mix", false))
+    if(GetConfigValueBool(mDevice.mDeviceName, "pipewire", "rt-mix", false))
         flags |= PW_STREAM_FLAG_RT_PROCESS;
     if(const auto res = pw_stream_connect(mStream.get(), PW_DIRECTION_OUTPUT, PwIdAny, flags,
         &params, 1))
@@ -1789,15 +1823,15 @@ auto PipeWirePlayback::reset() -> bool
         return state == PW_STREAM_STATE_PAUSED;
     });
 
-    /* TODO: Update mDevice->mUpdateSize with the stream's quantum, and
-     * mDevice->mBufferSize with the total known buffering delay from the head
+    /* TODO: Update mDevice.mUpdateSize with the stream's quantum, and
+     * mDevice.mBufferSize with the total known buffering delay from the head
      * of this playback stream to the tail of the device output.
      *
      * This info is apparently not available until after the stream starts.
      */
     plock.unlock();
 
-    mChannelPtrs.resize(mDevice->channelsFromFmt());
+    mChannelPtrs.resize(mDevice.channelsFromFmt());
 
     setDefaultWFXChannelOrder();
 
@@ -1850,11 +1884,11 @@ void PipeWirePlayback::start()
             const auto totalbuffers = ptime.avail_buffers + ptime.queued_buffers;
 
             /* Ensure the delay is in sample frames. */
-            const auto delay = gsl::narrow_cast<uint64_t>(ptime.delay) * mDevice->mSampleRate *
+            const auto delay = gsl::narrow_cast<uint64_t>(ptime.delay) * mDevice.mSampleRate *
                 ptime.rate.num / ptime.rate.denom;
 
-            mDevice->mUpdateSize = updatesize;
-            mDevice->mBufferSize = gsl::narrow_cast<uint32_t>(ptime.buffered + delay +
+            mDevice.mUpdateSize = updatesize;
+            mDevice.mBufferSize = gsl::narrow_cast<uint32_t>(ptime.buffered + delay +
                 uint64_t{totalbuffers}*updatesize);
             break;
         }
@@ -1865,11 +1899,11 @@ void PipeWirePlayback::start()
         if(ptime.rate.denom > 0 && updatesize > 0)
         {
             /* Ensure the delay is in sample frames. */
-            const auto delay = gsl::narrow_cast<uint64_t>(ptime.delay) * mDevice->mSampleRate *
+            const auto delay = gsl::narrow_cast<uint64_t>(ptime.delay) * mDevice.mSampleRate *
                 ptime.rate.num / ptime.rate.denom;
 
-            mDevice->mUpdateSize = updatesize;
-            mDevice->mBufferSize = gsl::narrow_cast<uint32_t>(delay + updatesize);
+            mDevice.mUpdateSize = updatesize;
+            mDevice.mBufferSize = gsl::narrow_cast<uint32_t>(delay + updatesize);
             break;
         }
 #endif
@@ -1920,11 +1954,11 @@ auto PipeWirePlayback::getClockLatency() -> ClockLatency
     auto tspec = timespec{};
     auto refcount = unsigned{};
     do {
-        refcount = mDevice->waitForMix();
-        mixtime = mDevice->getClockTime();
+        refcount = mDevice.waitForMix();
+        mixtime = mDevice.getClockTime();
         clock_gettime(CLOCK_MONOTONIC, &tspec);
         std::atomic_thread_fence(std::memory_order_acquire);
-    } while(refcount != mDevice->mMixCount.load(std::memory_order_relaxed));
+    } while(refcount != mDevice.mMixCount.load(std::memory_order_relaxed));
 
     /* Convert the monotonic clock, stream ticks, and stream delay to
      * nanoseconds.
@@ -1939,7 +1973,7 @@ auto PipeWirePlayback::getClockLatency() -> ClockLatency
          */
         ptime.now = monoclock.count();
         curtic = mixtime;
-        delay = nanoseconds{seconds{mDevice->mBufferSize}} / mDevice->mSampleRate;
+        delay = nanoseconds{seconds{mDevice.mBufferSize}} / mDevice.mSampleRate;
     }
     else
     {
@@ -1983,15 +2017,6 @@ auto PipeWirePlayback::getClockLatency() -> ClockLatency
 
 
 class PipeWireCapture final : public BackendBase {
-    void stateChangedCallback(pw_stream_state old, pw_stream_state state, gsl::czstring error) const noexcept;
-    void inputCallback() const noexcept;
-
-    void open(std::string_view name) override;
-    void start() override;
-    void stop() override;
-    void captureSamples(std::span<std::byte> outbuffer) override;
-    auto availableSamples() -> std::size_t override;
-
     u64 mTargetId{PwIdAny};
     ThreadMainloop mLoop;
     PwContextPtr mContext;
@@ -2001,11 +2026,19 @@ class PipeWireCapture final : public BackendBase {
 
     RingBufferPtr<std::byte> mRing;
 
+    auto stateChangedCallback(pw_stream_state old, pw_stream_state state, gsl::czstring error)
+        const noexcept -> void;
+    auto inputCallback() const noexcept -> void;
+
 public:
-    explicit PipeWireCapture(gsl::not_null<DeviceBase*> const device) noexcept
-        : BackendBase{device}
-    { }
-    ~PipeWireCapture() final { if(mLoop) mLoop.stop(); }
+    using BackendBase::BackendBase;
+    ~PipeWireCapture() override { if(mLoop) mLoop.stop(); }
+
+    auto open(std::string_view name) -> void override;
+    auto start() -> void override;
+    auto stop() -> void override;
+    auto captureSamples(std::span<std::byte> outbuffer) -> void override;
+    auto availableSamples() -> std::size_t override;
 };
 
 
@@ -2159,9 +2192,9 @@ void PipeWireCapture::open(std::string_view name)
      * reasonable. Unfortunately, when unspecified PipeWire seems to default to
      * around 40ms, which isn't great. So request 20ms instead.
      */
-    pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", (mDevice->mSampleRate+25) / 50,
-        mDevice->mSampleRate);
-    pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", mDevice->mSampleRate);
+    pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", (mDevice.mSampleRate+25) / 50,
+        mDevice.mSampleRate);
+    pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", mDevice.mSampleRate);
 #ifdef PW_KEY_TARGET_OBJECT
     pw_properties_set(props, PW_KEY_TARGET_OBJECT, std::to_string(mTargetId.c_val).c_str());
 #else
@@ -2210,7 +2243,7 @@ void PipeWireCapture::open(std::string_view name)
 
     /* Ensure at least a 100ms capture buffer. */
     mRing = RingBuffer<std::byte>::Create(
-        std::max(mDevice->mSampleRate/10u, mDevice->mBufferSize), mDevice->frameSizeFromFmt(),
+        std::max(mDevice.mSampleRate/10u, mDevice.mBufferSize), mDevice.frameSizeFromFmt(),
         false);
 }
 
@@ -2257,7 +2290,7 @@ bool PipeWireBackendFactory::init()
     if(!pwire_load())
         return false;
 
-    auto const version = pw_get_library_version();
+    auto const version = al::zstring_view{pw_get_library_version()};
     if(!check_version(version))
     {
         WARN("PipeWire version \"{}\" too old ({} or newer required)", version,
@@ -2334,8 +2367,8 @@ auto PipeWireBackendFactory::enumerate(BackendType const type) -> std::vector<st
 }
 
 
-auto PipeWireBackendFactory::createBackend(gsl::not_null<DeviceBase*> const device,
-    BackendType const type) -> BackendPtr
+auto PipeWireBackendFactory::createBackend(DeviceBase &device, BackendType const type)
+    -> BackendPtr
 {
     if(type == BackendType::Playback)
         return BackendPtr{new PipeWirePlayback{device}};

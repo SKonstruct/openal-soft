@@ -12,14 +12,12 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
+#include <iostream>
 #include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "alstring.h"
-#include "filesystem.h"
 #include "opthelpers.h"
 #include "strutils.hpp"
 
@@ -27,16 +25,23 @@
 
 #if HAVE_CXXMODULES
 import alsoft.router;
+import alstring;
+import filesystem;
 import gsl;
 import openal.alc;
 
 #else
 
 #include "AL/alc.h"
+
+#include "alstring.h"
+#include "filesystem.h"
 #include "gsl/gsl"
 #endif
 
 namespace {
+
+using namespace std::string_view_literals;
 
 /* C++23 has this... */
 struct contains_fn_ {
@@ -83,7 +88,7 @@ void AddModule(HMODULE const module, std::wstring_view const name)
     if(!gAcceptList.empty())
     {
         if(std::ranges::none_of(gAcceptList, [name](std::wstring_view const accept)
-            { return al::case_compare(name, accept) == 0; }))
+            { return is_eq(al::case_compare(name, accept)); }))
         {
             TRACE("{} not found in ALROUTER_ACCEPT, skipping", wstr_to_utf8(name));
             FreeLibrary(module);
@@ -91,7 +96,7 @@ void AddModule(HMODULE const module, std::wstring_view const name)
         }
     }
     if(std::ranges::any_of(gRejectList, [name](std::wstring_view const reject)
-        { return al::case_compare(name, reject) == 0; }))
+        { return is_eq(al::case_compare(name, reject)); }))
     {
         TRACE("{} found in ALROUTER_REJECT, skipping", wstr_to_utf8(name));
         FreeLibrary(module);
@@ -339,6 +344,28 @@ auto GetLoadedModuleDirectory(gsl::cwzstring const name, std::wstring *const mod
 
 } // namespace
 
+void al_print(eLogLevel const level, fmt::string_view const fmt, fmt::format_args&& args)
+{
+    if(LogLevel < level)
+        return;
+
+    auto const prefix = std::invoke([level]
+    {
+        switch(level)
+        {
+        case eLogLevel::None: break;
+        case eLogLevel::Trace: return "AL Router (II): {}\n"sv;
+        case eLogLevel::Warn: return "AL Router (WW): {}\n"sv;
+        case eLogLevel::Error: return "AL Router (EE): {}\n"sv;
+        }
+        return "AL Router (--): {}\n"sv;
+    });
+    auto &file = LogFile ? LogFile : std::cerr;
+    auto const msg = fmt::vformat(fmt, std::move(args));
+    fmt::vprint(file, prefix, fmt::make_format_args(msg));
+    file.flush();
+}
+
 void LoadDriverList()
 {
     TRACE("Initializing router v0.1-{} {}", ALSOFT_GIT_COMMIT_HASH, ALSOFT_GIT_BRANCH);
@@ -365,7 +392,7 @@ void LoadDriverList()
         TRACE("Got DLL path {}", wstr_to_utf8(dll_path));
 
     auto cwd_path = std::wstring{};
-    if(auto const curpath = std::filesystem::current_path(); !curpath.empty())
+    if(auto const curpath = fs::current_path(); !curpath.empty())
     {
         if constexpr(std::same_as<decltype(curpath)::string_type, std::wstring>)
             cwd_path = curpath.native();
@@ -417,7 +444,7 @@ void LoadDriverList()
         return drv.ALCVer >= MakeALCVer(1, 1)
             || drv.alcIsExtensionPresent(nullptr, "ALC_ENUMERATE_ALL_EXT")
             || drv.alcIsExtensionPresent(nullptr, "ALC_ENUMERATION_EXT");
-    }, &DriverIfacePtr::operator*);
+    }, al::dereference{});
 
     /* HACK: rapture3d_oal.dll isn't likely to work if it's one distributed for
      * specific games licensed to use it. It will enumerate a Rapture3D device
@@ -427,7 +454,7 @@ void LoadDriverList()
      * to open. Move it down so it's not used for the default device.
      */
     if(DriverList.size() > 1
-        && al::case_compare(DriverList.front()->Name, L"rapture3d_oal.dll") == 0)
+        and is_eq(al::case_compare(DriverList.front()->Name, L"rapture3d_oal.dll")))
         std::swap(*DriverList.begin(), *(DriverList.begin()+1));
 }
 

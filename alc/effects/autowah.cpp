@@ -23,7 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdlib>
+#include <cstdint>
 #include <numbers>
 #include <ranges>
 #include <span>
@@ -33,12 +33,18 @@
 #include "alnumeric.h"
 #include "core/ambidefs.h"
 #include "core/bufferline.h"
-#include "core/context.h"
-#include "core/device.h"
 #include "core/effects/base.h"
 #include "core/effectslot.h"
 #include "core/mixer.h"
 #include "intrusive_ptr.h"
+
+#if HAVE_CXXMODULES
+import core.context;
+import core.device;
+#else
+#include "core/context.h"
+#include "core/device.h"
+#endif
 
 struct BufferStorage;
 
@@ -49,7 +55,7 @@ constexpr auto MinFreq = 20.0f;
 constexpr auto MaxFreq = 2500.0f;
 constexpr auto QFactor = 5.0f;
 
-struct AutowahState final : public EffectState {
+struct AutowahState final : EffectState {
     /* Effect parameters */
     float mAttackRate{};
     float mReleaseRate{};
@@ -67,7 +73,7 @@ struct AutowahState final : public EffectState {
     std::array<FilterParam,BufferLineSize> mEnv;
 
     struct ChannelData {
-        unsigned mTargetChannel{InvalidChannelIndex.c_val};
+        unsigned mTargetChannel{InvalidChannelIndex};
 
         struct FilterHistory {
             float z1{}, z2{};
@@ -86,9 +92,9 @@ struct AutowahState final : public EffectState {
 
     void deviceUpdate(const DeviceBase *device, const BufferStorage *buffer) override;
     void update(const ContextBase *context, const EffectSlotBase *slot, const EffectProps *props,
-        const EffectTarget target) override;
-    void process(const size_t samplesToDo, const std::span<const FloatBufferLine> samplesIn,
-        const std::span<FloatBufferLine> samplesOut) override;
+        EffectTarget target) noexcept NONBLOCKING override;
+    void process(size_t samplesToDo, std::span<const FloatBufferLine> samplesIn,
+        std::span<FloatBufferLine> samplesOut) noexcept override;
 };
 
 void AutowahState::deviceUpdate(const DeviceBase*, const BufferStorage*)
@@ -107,11 +113,11 @@ void AutowahState::deviceUpdate(const DeviceBase*, const BufferStorage*)
 }
 
 void AutowahState::update(const ContextBase *context, const EffectSlotBase *slot,
-    const EffectProps *props_, const EffectTarget target)
+    const EffectProps *props_, const EffectTarget target) noexcept NONBLOCKING
 {
-    auto &props = std::get<AutowahProps>(*props_);
-    auto const device = al::get_not_null(context->mDevice);
-    auto const frequency = static_cast<float>(device->mSampleRate);
+    auto &props = IGNORE_FUNCTION_EFFECTS(std::get<AutowahProps>(*props_));
+    auto const &device = context->mDevice;
+    auto const frequency = static_cast<float>(device.mSampleRate);
 
     const auto ReleaseTime = std::clamp(props.ReleaseTime, 0.001f, 1.0f);
 
@@ -125,15 +131,16 @@ void AutowahState::update(const ContextBase *context, const EffectSlotBase *slot
 
     mOutTarget = target.Main->Buffer;
     target.Main->setAmbiMixParams(slot->Wet, slot->Gain,
-        [this](std::size_t const idx, u8 const outchan, float const outgain)
+        [this](std::size_t const idx, std::uint8_t const outchan, float const outgain)
     {
-        mChans[idx].mTargetChannel = outchan.c_val;
+        mChans[idx].mTargetChannel = outchan;
         mChans[idx].mTargetGain = outgain;
     });
 }
 
 void AutowahState::process(const size_t samplesToDo,
     const std::span<const FloatBufferLine> samplesIn, const std::span<FloatBufferLine> samplesOut)
+    noexcept NONBLOCKING
 {
     auto env_delay = mEnvDelay;
     std::ranges::transform(samplesIn[0] | std::views::take(samplesToDo), mEnv.begin(),

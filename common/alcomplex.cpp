@@ -6,41 +6,46 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdint>
 #include <numbers>
 #include <ranges>
 
+#include "gsl/assert"
+#include "zudl.hpp"
+
+#if HAVE_CXXMODULES
+import gsl;
+import types;
+#else
 #include "altypes.hpp"
 #include "gsl/gsl"
+#endif
 
 
 namespace {
 
-using u16x2 = std::array<u16, 2>;
+using u16x2 = std::array<std::uint16_t, 2>;
 using complex_d = std::complex<double>;
 
-[[nodiscard]]
-constexpr auto BitReverseCounter(std::size_t const log2_size) noexcept -> std::size_t
+[[nodiscard]] constexpr
+auto BitReverseCounter(std::size_t const log2_size) noexcept -> std::size_t
 {
     /* Some magic math that calculates the number of swaps needed for a
      * sequence of bit-reversed indices when index < reversed_index.
      */
-    return (1_zu<<(log2_size-1)) - (1_zu<<((log2_size-1_zu)/2_zu));
+    return (1_zu<<(log2_size-1)) - (1_zu<<((log2_size-1)/2));
 }
 
 
-template<std::size_t N>
-struct BitReverser {
-    static_assert(N <= sizeof(u16)*8, "Too many bits for the bit-reversal table.");
-
-    std::array<u16x2, BitReverseCounter(N)> mData{};
-
+template<std::size_t N> requires(N <= sizeof(u16)*8)
+struct BitReverser : std::array<u16x2, BitReverseCounter(N)> {
     constexpr BitReverser()
     {
-        auto const fftsize = 1_uz << N;
-        auto ret_i = 0_uz;
+        auto const fftsize = 1_usize << N;
+        auto iter = this->begin();
 
         /* Bit-reversal permutation applied to a sequence of fftsize items. */
-        for(auto const idx : std::views::iota(1_uz, fftsize-1_uz))
+        for(auto const idx : std::views::iota(1_usize, fftsize-1u))
         {
             auto revidx = idx;
             revidx = ((revidx&0xaaaaaaaa) >> 1) | ((revidx&0x55555555) << 1);
@@ -52,12 +57,12 @@ struct BitReverser {
 
             if(idx < revidx)
             {
-                mData[ret_i][0] = u16::from(idx);
-                mData[ret_i][1] = u16::from(revidx);
-                ++ret_i;
+                (*iter)[0] = idx.cast_to<u16>().c_val;
+                (*iter)[1] = revidx.cast_to<u16>().c_val;
+                ++iter;
             }
         }
-        Ensures(ret_i == std::size(mData));
+        Ensures(iter == this->end());
     }
 };
 
@@ -77,37 +82,37 @@ constexpr auto BitReverser10 = BitReverser<10>{};
 constexpr auto BitReverser11 = BitReverser<11>{};
 constexpr auto gBitReverses = std::array<std::span<u16x2 const>, 12>{{
     {}, {},
-    BitReverser2.mData,
-    BitReverser3.mData,
-    BitReverser4.mData,
-    BitReverser5.mData,
-    BitReverser6.mData,
-    BitReverser7.mData,
-    BitReverser8.mData,
-    BitReverser9.mData,
-    BitReverser10.mData,
-    BitReverser11.mData
+    BitReverser2,
+    BitReverser3,
+    BitReverser4,
+    BitReverser5,
+    BitReverser6,
+    BitReverser7,
+    BitReverser8,
+    BitReverser9,
+    BitReverser10,
+    BitReverser11
 }};
 
 /* Lookup table for std::polar(1, pi / (1<<index)); */
-template<typename T>
-constexpr auto gArgAngle = std::array<std::complex<T>, gBitReverses.size()-1>{{
-    {gsl::narrow_cast<T>(-1.00000000000000000e+00), gsl::narrow_cast<T>(0.00000000000000000e+00)},
-    {gsl::narrow_cast<T>( 0.00000000000000000e+00), gsl::narrow_cast<T>(1.00000000000000000e+00)},
-    {gsl::narrow_cast<T>( 7.07106781186547524e-01), gsl::narrow_cast<T>(7.07106781186547524e-01)},
-    {gsl::narrow_cast<T>( 9.23879532511286756e-01), gsl::narrow_cast<T>(3.82683432365089772e-01)},
-    {gsl::narrow_cast<T>( 9.80785280403230449e-01), gsl::narrow_cast<T>(1.95090322016128268e-01)},
-    {gsl::narrow_cast<T>( 9.95184726672196886e-01), gsl::narrow_cast<T>(9.80171403295606020e-02)},
-    {gsl::narrow_cast<T>( 9.98795456205172393e-01), gsl::narrow_cast<T>(4.90676743274180143e-02)},
-    {gsl::narrow_cast<T>( 9.99698818696204220e-01), gsl::narrow_cast<T>(2.45412285229122880e-02)},
-    {gsl::narrow_cast<T>( 9.99924701839144541e-01), gsl::narrow_cast<T>(1.22715382857199261e-02)},
-    {gsl::narrow_cast<T>( 9.99981175282601143e-01), gsl::narrow_cast<T>(6.13588464915447536e-03)},
-    {gsl::narrow_cast<T>( 9.99995293809576172e-01), gsl::narrow_cast<T>(3.06795676296597627e-03)}
+constexpr auto gArgAngle = std::array<complex_d, gBitReverses.size()-1>{{
+    {-1.00000000000000000e+00, 0.00000000000000000e+00},
+    { 0.00000000000000000e+00, 1.00000000000000000e+00},
+    { 7.07106781186547524e-01, 7.07106781186547524e-01},
+    { 9.23879532511286756e-01, 3.82683432365089772e-01},
+    { 9.80785280403230449e-01, 1.95090322016128268e-01},
+    { 9.95184726672196886e-01, 9.80171403295606020e-02},
+    { 9.98795456205172393e-01, 4.90676743274180143e-02},
+    { 9.99698818696204220e-01, 2.45412285229122880e-02},
+    { 9.99924701839144541e-01, 1.22715382857199261e-02},
+    { 9.99981175282601143e-01, 6.13588464915447536e-03},
+    { 9.99995293809576172e-01, 3.06795676296597627e-03}
 }};
 
 } // namespace
 
-void complex_fft(std::span<std::complex<double>> const buffer, double const sign)
+void complex_fft(std::span<std::complex<double>> const buffer, double const sign) noexcept
+    NONBLOCKING
 {
     auto const fftsize = buffer.size();
     /* Get the number of bits used for indexing. Simplifies bit-reversal and
@@ -117,7 +122,7 @@ void complex_fft(std::span<std::complex<double>> const buffer, double const sign
         log2_size < gBitReverses.size()) [[likely]]
     {
         for(auto &rev : gBitReverses[log2_size])
-            std::swap(buffer[rev[0].c_val], buffer[rev[1].c_val]);
+            std::swap(buffer[rev[0]], buffer[rev[1]]);
 
         /* Iterative form of Danielson-Lanczos lemma */
         for(auto const i : std::views::iota(0_uz, log2_size))
@@ -134,7 +139,7 @@ void complex_fft(std::span<std::complex<double>> const buffer, double const sign
                 buffer[k] += temp;
             }
 
-            auto const w = complex_d{gArgAngle<double>[i].real(),gArgAngle<double>[i].imag()*sign};
+            auto const w = complex_d{gArgAngle[i].real(),gArgAngle[i].imag()*sign};
             auto u = w;
             for(auto const j : std::views::iota(1_uz, step2))
             {
@@ -195,7 +200,7 @@ void complex_fft(std::span<std::complex<double>> const buffer, double const sign
     }
 }
 
-void complex_hilbert(std::span<std::complex<double>> const buffer)
+void complex_hilbert(std::span<std::complex<double>> const buffer) noexcept NONBLOCKING
 {
     inverse_fft(buffer);
 

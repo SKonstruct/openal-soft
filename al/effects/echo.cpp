@@ -10,7 +10,11 @@
 #if ALSOFT_EAX
 #include "al/eax/effect.h"
 #include "al/eax/exception.h"
-#include "al/eax/utils.h"
+#if HAVE_CXXMODULES
+import eax.validator;
+#else
+#include "al/eax/validator.hpp"
+#endif
 #endif // ALSOFT_EAX
 
 #if HAVE_CXXMODULES
@@ -39,56 +43,56 @@ consteval auto genDefaultProps() noexcept -> EffectProps
 
 constinit const EffectProps EchoEffectProps(genDefaultProps());
 
-void EchoEffectHandler::SetParami(al::Context *context, EchoProps&, ALenum param, int)
-{ context->throw_error(AL_INVALID_ENUM, "Invalid echo integer property {:#04x}", as_unsigned(param)); }
-void EchoEffectHandler::SetParamiv(al::Context *context, EchoProps&, ALenum param, const int*)
-{ context->throw_error(AL_INVALID_ENUM, "Invalid echo integer-vector property {:#04x}", as_unsigned(param)); }
-void EchoEffectHandler::SetParamf(al::Context *context, EchoProps &props, ALenum param, float val)
+void EchoEffectHandler::SetParami(al::Context& context, EchoProps&, ALenum param, int)
+{ context.throw_error(AL_INVALID_ENUM, "Invalid echo integer property {:#04x}", as_unsigned(param)); }
+void EchoEffectHandler::SetParamiv(al::Context& context, EchoProps&, ALenum param, const int*)
+{ context.throw_error(AL_INVALID_ENUM, "Invalid echo integer-vector property {:#04x}", as_unsigned(param)); }
+void EchoEffectHandler::SetParamf(al::Context& context, EchoProps &props, ALenum param, float val)
 {
     switch(param)
     {
     case AL_ECHO_DELAY:
         if(!(val >= AL_ECHO_MIN_DELAY && val <= AL_ECHO_MAX_DELAY))
-            context->throw_error(AL_INVALID_VALUE, "Echo delay out of range");
+            context.throw_error(AL_INVALID_VALUE, "Echo delay out of range");
         props.Delay = val;
         return;
 
     case AL_ECHO_LRDELAY:
         if(!(val >= AL_ECHO_MIN_LRDELAY && val <= AL_ECHO_MAX_LRDELAY))
-            context->throw_error(AL_INVALID_VALUE, "Echo LR delay out of range");
+            context.throw_error(AL_INVALID_VALUE, "Echo LR delay out of range");
         props.LRDelay = val;
         return;
 
     case AL_ECHO_DAMPING:
         if(!(val >= AL_ECHO_MIN_DAMPING && val <= AL_ECHO_MAX_DAMPING))
-            context->throw_error(AL_INVALID_VALUE, "Echo damping out of range");
+            context.throw_error(AL_INVALID_VALUE, "Echo damping out of range");
         props.Damping = val;
         return;
 
     case AL_ECHO_FEEDBACK:
         if(!(val >= AL_ECHO_MIN_FEEDBACK && val <= AL_ECHO_MAX_FEEDBACK))
-            context->throw_error(AL_INVALID_VALUE, "Echo feedback out of range");
+            context.throw_error(AL_INVALID_VALUE, "Echo feedback out of range");
         props.Feedback = val;
         return;
 
     case AL_ECHO_SPREAD:
         if(!(val >= AL_ECHO_MIN_SPREAD && val <= AL_ECHO_MAX_SPREAD))
-            context->throw_error(AL_INVALID_VALUE, "Echo spread out of range");
+            context.throw_error(AL_INVALID_VALUE, "Echo spread out of range");
         props.Spread = val;
         return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid echo float property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid echo float property {:#04x}",
         as_unsigned(param));
 }
-void EchoEffectHandler::SetParamfv(al::Context *context, EchoProps &props, ALenum param, const float *vals)
+void EchoEffectHandler::SetParamfv(al::Context& context, EchoProps &props, ALenum param, const float *vals)
 { SetParamf(context, props, param, *vals); }
 
-void EchoEffectHandler::GetParami(al::Context *context, const EchoProps&, ALenum param, int*)
-{ context->throw_error(AL_INVALID_ENUM, "Invalid echo integer property {:#04x}", as_unsigned(param)); }
-void EchoEffectHandler::GetParamiv(al::Context *context, const EchoProps&, ALenum param, int*)
-{ context->throw_error(AL_INVALID_ENUM, "Invalid echo integer-vector property {:#04x}", as_unsigned(param)); }
-void EchoEffectHandler::GetParamf(al::Context *context, const EchoProps &props, ALenum param, float *val)
+void EchoEffectHandler::GetParami(al::Context& context, const EchoProps&, ALenum param, int*)
+{ context.throw_error(AL_INVALID_ENUM, "Invalid echo integer property {:#04x}", as_unsigned(param)); }
+void EchoEffectHandler::GetParamiv(al::Context& context, const EchoProps&, ALenum param, int*)
+{ context.throw_error(AL_INVALID_ENUM, "Invalid echo integer-vector property {:#04x}", as_unsigned(param)); }
+void EchoEffectHandler::GetParamf(al::Context& context, const EchoProps &props, ALenum param, float *val)
 {
     switch(param)
     {
@@ -99,22 +103,27 @@ void EchoEffectHandler::GetParamf(al::Context *context, const EchoProps &props, 
     case AL_ECHO_SPREAD: *val = props.Spread; return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid echo float property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid echo float property {:#04x}",
         as_unsigned(param));
 }
-void EchoEffectHandler::GetParamfv(al::Context *context, const EchoProps &props, ALenum param, float *vals)
+void EchoEffectHandler::GetParamfv(al::Context& context, const EchoProps &props, ALenum param, float *vals)
 { GetParamf(context, props, param, vals); }
 
 
 #if ALSOFT_EAX
 namespace {
 
-using EchoCommitter = EaxCommitter<EaxEchoCommitter>;
+/* NOLINTNEXTLINE(clazy-copyable-polymorphic) Exceptions must be copyable. */
+struct EaxEchoException final : EaxException {
+    explicit EaxEchoException(std::string_view const message)
+        : EaxException{"EAX_ECHO_EFFECT", message}
+    { }
+};
 
 struct DelayValidator {
     void operator()(float const flDelay) const
     {
-        eax_validate_range<EchoCommitter::Exception>(
+        eax_validate_range<EaxEchoException>(
             "Delay",
             flDelay,
             EAXECHO_MINDELAY,
@@ -125,7 +134,7 @@ struct DelayValidator {
 struct LrDelayValidator {
     void operator()(float const flLRDelay) const
     {
-        eax_validate_range<EchoCommitter::Exception>(
+        eax_validate_range<EaxEchoException>(
             "LR Delay",
             flLRDelay,
             EAXECHO_MINLRDELAY,
@@ -136,7 +145,7 @@ struct LrDelayValidator {
 struct DampingValidator {
     void operator()(float const flDamping) const
     {
-        eax_validate_range<EchoCommitter::Exception>(
+        eax_validate_range<EaxEchoException>(
             "Damping",
             flDamping,
             EAXECHO_MINDAMPING,
@@ -147,7 +156,7 @@ struct DampingValidator {
 struct FeedbackValidator {
     void operator()(float const flFeedback) const
     {
-        eax_validate_range<EchoCommitter::Exception>(
+        eax_validate_range<EaxEchoException>(
             "Feedback",
             flFeedback,
             EAXECHO_MINFEEDBACK,
@@ -158,7 +167,7 @@ struct FeedbackValidator {
 struct SpreadValidator {
     void operator()(float const flSpread) const
     {
-        eax_validate_range<EchoCommitter::Exception>(
+        eax_validate_range<EaxEchoException>(
             "Spread",
             flSpread,
             EAXECHO_MINSPREAD,
@@ -179,16 +188,11 @@ struct AllValidator {
 
 } // namespace
 
-template<> /* NOLINTNEXTLINE(clazy-copyable-polymorphic) Exceptions must be copyable. */
-struct EchoCommitter::Exception final : EaxException {
-    explicit Exception(const std::string_view message) : EaxException{"EAX_ECHO_EFFECT", message}
-    { }
-};
-
 template<> [[noreturn]]
-void EchoCommitter::fail(const std::string_view message)
-{ throw Exception{message}; }
+void EaxEchoCommitter::fail(std::string_view const message)
+{ throw EaxEchoException{message}; }
 
+template<>
 auto EaxEchoCommitter::commit(const EAXECHOPROPERTIES &props) const -> bool
 {
     if(auto *cur = std::get_if<EAXECHOPROPERTIES>(&mEaxProps); cur && *cur == props)
@@ -205,6 +209,7 @@ auto EaxEchoCommitter::commit(const EAXECHOPROPERTIES &props) const -> bool
     return true;
 }
 
+template<>
 void EaxEchoCommitter::SetDefaults(EaxEffectProps &props)
 {
     props = EAXECHOPROPERTIES{
@@ -215,6 +220,7 @@ void EaxEchoCommitter::SetDefaults(EaxEffectProps &props)
         .flSpread = EAXECHO_DEFAULTSPREAD};
 }
 
+template<>
 void EaxEchoCommitter::Get(const EaxCall &call, const EAXECHOPROPERTIES &props)
 {
     switch(call.get_property_id())
@@ -230,6 +236,7 @@ void EaxEchoCommitter::Get(const EaxCall &call, const EAXECHOPROPERTIES &props)
     }
 }
 
+template<>
 void EaxEchoCommitter::Set(const EaxCall &call, EAXECHOPROPERTIES &props)
 {
     switch(call.get_property_id())

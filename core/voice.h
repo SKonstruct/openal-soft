@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
@@ -20,13 +21,13 @@
 #include "filters/splitter.h"
 #include "mixer/defs.h"
 #include "mixer/hrtfdefs.h"
-#include "resampler_limits.h"
+#include "resampler_limits.hpp"
 #include "vector.h"
 
 struct ContextBase;
 struct DeviceBase;
 struct EffectSlotBase;
-enum class DistanceModel : u8::value_t;
+enum class DistanceModel : std::uint8_t;
 
 inline constexpr auto MaxSendCount = 6u;
 
@@ -34,13 +35,13 @@ inline constexpr auto MaxPitch = 10u;
 
 inline constinit auto ResamplerDefault = Resampler::Spline;
 
-enum class SpatializeMode : u8::value_t {
+enum class SpatializeMode : std::uint8_t {
     Off,
     On,
     Auto
 };
 
-enum class DirectMode : u8::value_t {
+enum class DirectMode : std::uint8_t {
     Off,
     DropMismatch,
     RemixMismatch
@@ -161,7 +162,7 @@ struct VoicePropsItem : VoiceProps {
     std::atomic<VoicePropsItem*> next{nullptr};
 };
 
-enum class VoiceFlag : u8::value_t {
+enum class VoiceFlag : std::uint8_t {
     IsStatic,
     IsCallback,
     IsAmbisonic,
@@ -262,7 +263,7 @@ struct Voice {
     Voice& operator=(Voice const&) = delete;
 
     void mix(State vstate, ContextBase *context, std::chrono::nanoseconds deviceTime,
-        unsigned samplesToDo);
+        unsigned samplesToDo) noexcept NONBLOCKING;
 
     void prepare(DeviceBase *device);
 

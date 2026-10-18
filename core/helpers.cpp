@@ -1,209 +1,30 @@
 
 #include "config.h"
 
-#include "helpers.h"
-
 #if defined(_WIN32)
 #include <windows.h>
 #endif
 
 #include <algorithm>
 #include <cstdlib>
-#include <cstring>
 #include <functional>
-#include <limits>
 #include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
-
-#include "almalloc.h"
-#include "alnumeric.h"
-#include "alstring.h"
-#include "filesystem.h"
-#include "gsl/gsl"
-#include "strutils.hpp"
-
-#if HAVE_CXXMODULES
-import logging;
-#else
-#include "logging.h"
-#endif
-
-
-namespace {
-
-using namespace std::string_view_literals;
-
-auto gSearchLock = std::mutex{};
-
-void DirectorySearch(const fs::path &path, const std::string_view ext,
-    std::vector<std::string> *const results)
-{
-    const auto base = results->size();
-
-    try {
-        auto fpath = path.lexically_normal();
-        if(!fs::exists(fpath))
-            return;
-
-        TRACE("Searching {} for *{}", al::u8_as_char(fpath.u8string()), ext);
-        for(auto&& dirent : fs::directory_iterator{fpath})
-        {
-            auto&& entrypath = dirent.path();
-            if(!entrypath.has_extension())
-                continue;
-
-            if(fs::status(entrypath).type() != fs::file_type::regular)
-                continue;
-            const auto u8ext = entrypath.extension().u8string();
-            if(al::case_compare(al::u8_as_char(u8ext), ext) == 0)
-                results->emplace_back(al::u8_as_char(entrypath.u8string()));
-        }
-    }
-    catch(std::exception& e) {
-        ERR("Exception enumerating files: {}", e.what());
-    }
-
-    const auto newlist = std::span{*results}.subspan(base);
-    std::ranges::sort(newlist);
-    for(const auto &name : newlist)
-        TRACE(" got {}", name);
-}
-
-} // namespace
+#include <utility>
+#include <vector>
 
 #ifdef _WIN32
-
 #include <cctype>
+#if defined(_MSVC_STL_UPDATE) && __has_include(<xfilesystem_abi.h>)
+#include <xfilesystem_abi.h> // HACK: For MSVC?
+#endif
 #include <shlobj.h>
 
-auto GetProcBinary() -> const PathNamePair&
-{
-    static const auto procbin = std::invoke([]() -> PathNamePair
-    {
-#if !ALSOFT_UWP
-        auto pathlen = DWORD{256};
-        auto fullpath = std::wstring(pathlen, L'\0');
-        auto len = GetModuleFileNameW(nullptr, fullpath.data(), pathlen);
-        while(len == fullpath.size())
-        {
-            pathlen <<= 1;
-            if(pathlen == 0)
-            {
-                /* pathlen overflow (more than 4 billion characters??) */
-                len = 0;
-                break;
-            }
-            fullpath.resize(pathlen);
-            len = GetModuleFileNameW(nullptr, fullpath.data(), pathlen);
-        }
-        if(len == 0)
-        {
-            ERR("Failed to get process name: error {}", GetLastError());
-            return PathNamePair{};
-        }
-
-        fullpath.resize(len);
-#else
-        if(__argc < 1 || !__wargv)
-        {
-            ERR("Failed to get process name: __argc = {}, __wargv = {}", __argc,
-                static_cast<void*>(__wargv));
-            return PathNamePair{};
-        }
-        const auto *exePath = __wargv[0];
-        if(!exePath)
-        {
-            ERR("Failed to get process name: __wargv[0] == nullptr");
-            return PathNamePair{};
-        }
-        auto fullpath = std::wstring{exePath};
-#endif
-        std::ranges::replace(fullpath, L'/', L'\\');
-
-        auto res = PathNamePair{};
-        if(auto seppos = fullpath.rfind(L'\\'); seppos < fullpath.size())
-        {
-            res.path = wstr_to_utf8(std::wstring_view{fullpath}.substr(0, seppos));
-            res.fname = wstr_to_utf8(std::wstring_view{fullpath}.substr(seppos+1));
-        }
-        else
-            res.fname = wstr_to_utf8(fullpath);
-
-        TRACE("Got binary: {}, {}", res.path, res.fname);
-        return res;
-    });
-    return procbin;
-}
-
-namespace {
-
-#if !ALSOFT_UWP && !defined(_GAMING_XBOX)
-struct CoTaskMemDeleter {
-    void operator()(void *mem) const { CoTaskMemFree(mem); }
-};
-#endif
-
-} // namespace
-
-auto SearchDataFiles(const std::string_view ext) -> std::vector<std::string>
-{
-    const auto srchlock = std::lock_guard{gSearchLock};
-
-    /* Search the app-local directory. */
-    auto results = std::vector<std::string>{};
-    if(auto localpath = al::getenv(L"ALSOFT_LOCAL_PATH"))
-        DirectorySearch(*localpath, ext, &results);
-    else if(auto curpath = fs::current_path(); !curpath.empty())
-        DirectorySearch(curpath, ext, &results);
-
-    return results;
-}
-
-auto SearchDataFiles(const std::string_view ext, const std::string_view subdir)
-    -> std::vector<std::string>
-{
-    const auto srchlock = std::lock_guard{gSearchLock};
-
-    /* If the path is absolute, use it directly. */
-    auto results = std::vector<std::string>{};
-    const auto path = fs::path(al::char_as_u8(subdir));
-    if(path.is_absolute())
-    {
-        DirectorySearch(path, ext, &results);
-        return results;
-    }
-
-#if !ALSOFT_UWP && !defined(_GAMING_XBOX)
-    /* Search the local and global data dirs. */
-    for(const auto &folderid : std::array{FOLDERID_RoamingAppData, FOLDERID_ProgramData})
-    {
-        auto buffer = std::unique_ptr<WCHAR,CoTaskMemDeleter>{};
-        const HRESULT hr{SHGetKnownFolderPath(folderid, KF_FLAG_DONT_UNEXPAND, nullptr,
-            al::out_ptr(buffer))};
-        if(FAILED(hr) || !buffer || !*buffer)
-            continue;
-
-        DirectorySearch(fs::path{buffer.get()}/path, ext, &results);
-    }
-#endif
-
-    return results;
-}
-
-void SetRTPriority()
-{
-#if !ALSOFT_UWP
-    if(RTPrioLevel > 0)
-    {
-        if(!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL))
-            ERR("Failed to set priority level for thread");
-    }
-#endif
-}
+#include "inout_ptr.hpp"
 
 #else
 
@@ -231,6 +52,192 @@ void SetRTPriority()
 #define RLIMIT_RTTIME 15
 #endif
 #endif
+#endif
+
+#include "alnumeric.h"
+#include "strutils.hpp"
+
+#if HAVE_CXXMODULES
+import alstring;
+import core.helpers;
+import filesystem;
+import logging;
+#else
+#include "alstring.h"
+#include "core/helpers.hpp"
+#include "core/logging.h"
+#include "filesystem.h"
+#endif
+
+
+namespace {
+
+using namespace std::string_view_literals;
+
+auto gSearchLock = std::mutex{};
+
+void DirectorySearch(fs::path const& path, std::u8string_view const ext,
+    std::vector<fs::path> *const results)
+{
+    const auto base = results->size();
+
+    try {
+        auto const fpath = path.lexically_normal();
+        if(!fs::exists(fpath))
+            return;
+
+        TRACE("Searching {} for *{}", al::u8_as_char(fpath.u8string()), al::u8_as_char(ext));
+        for(auto&& dirent : fs::directory_iterator{fpath})
+        {
+            auto&& entrypath = dirent.path();
+            if(!entrypath.has_extension())
+                continue;
+
+            if(fs::status(entrypath).type() != fs::file_type::regular)
+                continue;
+            if(is_eq(al::case_compare(entrypath.extension().u8string(), ext)))
+                results->emplace_back(entrypath);
+        }
+    }
+    catch(std::exception& e) {
+        ERR("Exception enumerating files: {}", e.what());
+    }
+
+    const auto newlist = std::span{*results}.subspan(base);
+    std::ranges::sort(newlist);
+    for(const auto &name : newlist)
+        TRACE(" got {}", al::u8_as_char(name.u8string()));
+}
+
+} // namespace
+
+#ifdef _WIN32
+auto GetProcBinary() -> const PathNamePair&
+{
+    static const auto procbin = std::invoke([]() -> PathNamePair
+    {
+        auto res = PathNamePair{};
+
+#if !ALSOFT_UWP
+        auto pathlen = DWORD{256};
+        auto fullpath = std::wstring(pathlen, L'\0');
+        auto len = GetModuleFileNameW(nullptr, fullpath.data(), pathlen);
+        while(len == fullpath.size())
+        {
+            pathlen <<= 1;
+            if(pathlen == 0)
+            {
+                /* pathlen overflow (more than 4 billion characters??) */
+                len = 0;
+                break;
+            }
+            fullpath.resize(pathlen);
+            len = GetModuleFileNameW(nullptr, fullpath.data(), pathlen);
+        }
+        if(len == 0)
+        {
+            ERR("Failed to get process name: error {}", GetLastError());
+            return res;
+        }
+
+        fullpath.resize(len);
+#else
+        if(__argc < 1 || !__wargv)
+        {
+            ERR("Failed to get process name: __argc = {}, __wargv = {}", __argc,
+                static_cast<void*>(__wargv));
+            return res;
+        }
+        const auto *exePath = __wargv[0];
+        if(!exePath)
+        {
+            ERR("Failed to get process name: __wargv[0] == nullptr");
+            return res;
+        }
+        auto fullpath = std::wstring{exePath};
+#endif
+        std::ranges::replace(fullpath, L'/', L'\\');
+
+        if(auto seppos = fullpath.rfind(L'\\'); seppos < fullpath.size())
+        {
+            res.path = wstr_to_utf8(std::wstring_view{fullpath}.substr(0, seppos));
+            res.fname = wstr_to_utf8(std::wstring_view{fullpath}.substr(seppos+1));
+        }
+        else
+            res.fname = wstr_to_utf8(fullpath);
+
+        TRACE("Got binary: {}, {}", res.path, res.fname);
+        return res;
+    });
+    return procbin;
+}
+
+namespace {
+
+#if !ALSOFT_UWP && !defined(_GAMING_XBOX)
+struct CoTaskMemDeleter {
+    void operator()(void *mem) const { CoTaskMemFree(mem); }
+};
+#endif
+
+} // namespace
+
+auto SearchDataFiles(fs::path const& ext) -> std::vector<fs::path>
+{
+    const auto srchlock = std::lock_guard{gSearchLock};
+
+    /* Search the app-local directory. */
+    auto results = std::vector<fs::path>{};
+    if(auto localpath = al::getenv(L"ALSOFT_LOCAL_PATH"))
+        DirectorySearch(*localpath, ext.u8string(), &results);
+    else if(auto curpath = fs::current_path(); !curpath.empty())
+        DirectorySearch(curpath, ext.u8string(), &results);
+
+    return results;
+}
+
+auto SearchDataFiles(fs::path const& ext, fs::path const& subdir) -> std::vector<fs::path>
+{
+    const auto srchlock = std::lock_guard{gSearchLock};
+
+    /* If the path is absolute, use it directly. */
+    auto results = std::vector<fs::path>{};
+    if(subdir.is_absolute())
+    {
+        DirectorySearch(subdir, ext.u8string(), &results);
+        return results;
+    }
+
+#if !ALSOFT_UWP && !defined(_GAMING_XBOX)
+    auto const extstr = ext.u8string();
+    /* Search the local and global data dirs. */
+    for(const auto &folderid : std::array{FOLDERID_RoamingAppData, FOLDERID_ProgramData})
+    {
+        auto buffer = std::unique_ptr<WCHAR,CoTaskMemDeleter>{};
+        const HRESULT hr{SHGetKnownFolderPath(folderid, KF_FLAG_DONT_UNEXPAND, nullptr,
+            al::out_ptr(buffer))};
+        if(FAILED(hr) || !buffer || !*buffer)
+            continue;
+
+        DirectorySearch(fs::path{buffer.get()}/subdir, extstr, &results);
+    }
+#endif
+
+    return results;
+}
+
+void SetRTPriority()
+{
+#if !ALSOFT_UWP
+    if(RTPrioLevel > 0)
+    {
+        if(!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL))
+            ERR("Failed to set priority level for thread");
+    }
+#endif
+}
+
+#else
 
 auto GetProcBinary() -> const PathNamePair&
 {
@@ -313,38 +320,37 @@ auto GetProcBinary() -> const PathNamePair&
     return procbin;
 }
 
-auto SearchDataFiles(const std::string_view ext) -> std::vector<std::string>
+auto SearchDataFiles(fs::path const& ext) -> std::vector<fs::path>
 {
     const auto srchlock = std::lock_guard{gSearchLock};
 
     /* Search the app-local directory. */
-    auto results = std::vector<std::string>{};
-    if(auto localpath = al::getenv("ALSOFT_LOCAL_PATH"))
-        DirectorySearch(*localpath, ext, &results);
-    else if(auto curpath = fs::current_path(); !curpath.empty())
-        DirectorySearch(curpath, ext, &results);
+    auto results = std::vector<fs::path>{};
+    if(auto const localpath = al::getenv("ALSOFT_LOCAL_PATH"))
+        DirectorySearch(*localpath, ext.u8string(), &results);
+    else if(auto const curpath = fs::current_path(); !curpath.empty())
+        DirectorySearch(curpath, ext.u8string(), &results);
 
     return results;
 }
 
-auto SearchDataFiles(const std::string_view ext, const std::string_view subdir)
-    -> std::vector<std::string>
+auto SearchDataFiles(fs::path const& ext, fs::path const& subdir) -> std::vector<fs::path>
 {
     const auto srchlock = std::lock_guard{gSearchLock};
 
-    auto results = std::vector<std::string>{};
-    auto path = fs::path(al::char_as_u8(subdir));
-    if(path.is_absolute())
+    auto results = std::vector<fs::path>{};
+    if(subdir.is_absolute())
     {
-        DirectorySearch(path, ext, &results);
+        DirectorySearch(subdir, ext.u8string(), &results);
         return results;
     }
 
+    auto const extstr = ext.u8string();
     /* Search local data dir */
-    if(auto datapath = al::getenv("XDG_DATA_HOME"))
-        DirectorySearch(fs::path{*datapath}/path, ext, &results);
-    else if(auto homepath = al::getenv("HOME"))
-        DirectorySearch(fs::path{*homepath}/".local/share"/path, ext, &results);
+    if(auto const datapath = al::getenv("XDG_DATA_HOME"))
+        DirectorySearch(fs::path{*datapath}/subdir, extstr, &results);
+    else if(auto const homepath = al::getenv("HOME"))
+        DirectorySearch(fs::path{*homepath}/".local/share"/subdir, extstr, &results);
 
     /* Search global data dirs */
     const auto datadirs = std::string{al::getenv("XDG_DATA_DIRS")
@@ -361,13 +367,13 @@ auto SearchDataFiles(const std::string_view ext, const std::string_view subdir)
         curpos = nextpos;
 
         if(!pathname.empty())
-            DirectorySearch(fs::path{pathname}/path, ext, &results);
+            DirectorySearch(fs::path{pathname}/subdir, extstr, &results);
     }
 
 #ifdef ALSOFT_INSTALL_DATADIR
     /* Search the installation data directory */
     if(auto instpath = fs::path{ALSOFT_INSTALL_DATADIR}; !instpath.empty())
-        DirectorySearch(instpath/path, ext, &results);
+        DirectorySearch(instpath/subdir, extstr, &results);
 #endif
 
     return results;
@@ -375,7 +381,7 @@ auto SearchDataFiles(const std::string_view ext, const std::string_view subdir)
 
 namespace {
 
-bool SetRTPriorityPthread(int prio [[maybe_unused]])
+bool SetRTPriorityPthread(int const prio [[maybe_unused]])
 {
     auto err = ENOTSUP;
 #if defined(HAVE_PTHREAD_SETSCHEDPARAM) && !defined(__OpenBSD__)
@@ -403,62 +409,64 @@ bool SetRTPriorityPthread(int prio [[maybe_unused]])
 bool SetRTPriorityRTKit(int prio [[maybe_unused]])
 {
 #if HAVE_RTKIT
-    auto const conn = rtkit_get_dbus_connection();
-    if(!conn) return false;
+    auto const rtkit = RTKit::Create();
+    if(not rtkit) return false;
 
-    auto nicemin = int{};
-    auto err = rtkit_get_min_nice_level(conn.get(), &nicemin);
-    if(err == -ENOENT)
+    auto const nicemin = rtkit.get_min_nice_level();
+    if(not nicemin.has_value())
     {
-        err = std::abs(err);
-        ERR("Could not query RTKit: {} ({})", std::generic_category().message(err), err);
+        auto const err = std::make_error_code(nicemin.error());
+        ERR("Could not query RTKit: {} ({})", err.message(), err.value());
         return false;
     }
-    auto rtmax = rtkit_get_max_realtime_priority(conn.get());
-    TRACE("Maximum real-time priority: {}, minimum niceness: {}", rtmax, nicemin);
-
-    static constexpr auto limit_rttime = [](DBusConnection *c) -> int
+    auto rtmax = rtkit.get_max_realtime_priority();
+    if(not rtmax.has_value())
     {
-        using ulonglong = unsigned long long;
-        const auto maxrttime = rtkit_get_rttime_usec_max(c);
-        if(maxrttime <= 0) return gsl::narrow_cast<int>(std::abs(maxrttime));
-        const auto umaxtime = gsl::narrow_cast<ulonglong>(maxrttime);
+        auto const err = std::make_error_code(rtmax.error());
+        ERR("Could not get max realtime priority: {} ({})", err.message(), err.value());
+        return false;
+    }
+    TRACE("Maximum real-time priority: {}, minimum niceness: {}", *rtmax, *nicemin);
 
-        auto rlim = rlimit{};
-        if(getrlimit(RLIMIT_RTTIME, &rlim) != 0)
-            return errno;
-
-        TRACE("RTTime max: {} (hard: {}, soft: {})", umaxtime, rlim.rlim_max, rlim.rlim_cur);
-        if(rlim.rlim_max > umaxtime)
-        {
-            rlim.rlim_max = al::saturate_cast<rlim_t>(umaxtime);
-            rlim.rlim_cur = std::min(rlim.rlim_cur, rlim.rlim_max);
-            if(setrlimit(RLIMIT_RTTIME, &rlim) != 0)
-                return errno;
-        }
-        return 0;
-    };
-    if(rtmax > 0)
+    if(*rtmax > 0)
     {
         if(AllowRTTimeLimit)
         {
-            err = limit_rttime(conn.get());
-            if(err != 0)
-                WARN("Failed to set RLIMIT_RTTIME for RTKit: {} ({})",
-                    std::generic_category().message(err), err);
+            auto const res = rtkit.get_rttime_usec_max()
+                .and_then([](long long const maxtime) -> rtkitret_t<void>
+                {
+                    auto rlim = rlimit{};
+                    if(getrlimit(RLIMIT_RTTIME, &rlim) != 0)
+                        return al::unexpected(std::errc{errno});
+
+                    TRACE("RTTime max: {} (hard: {}, soft: {})", maxtime, rlim.rlim_max,
+                        rlim.rlim_cur);
+                    if(maxtime > 0 and std::cmp_greater(rlim.rlim_max, maxtime))
+                    {
+                        rlim.rlim_max = al::saturate_cast<rlim_t>(maxtime);
+                        rlim.rlim_cur = std::min(rlim.rlim_cur, rlim.rlim_max);
+                        if(setrlimit(RLIMIT_RTTIME, &rlim) != 0)
+                            return al::unexpected(std::errc{errno});
+                    }
+                    return {};
+                });
+            if(not res.has_value())
+            {
+                auto const err = std::make_error_code(res.error());
+                WARN("Failed to set RLIMIT_RTTIME for RTKit: {} ({})", err.message(), err.value());
+            }
         }
 
         /* Limit the maximum real-time priority to half. */
-        rtmax = (rtmax+1)/2;
-        prio = std::clamp(prio, 1, rtmax);
+        *rtmax = (*rtmax+1)/2;
+        prio = std::clamp(prio, 1, *rtmax);
 
-        TRACE("Making real-time with priority {} (max: {})", prio, rtmax);
-        err = rtkit_make_realtime(conn.get(), 0, prio);
-        if(err == 0) return true;
+        TRACE("Making real-time with priority {} (max: {})", prio, *rtmax);
+        auto const res = rtkit.make_realtime(0, prio);
+        if(res.has_value()) return true;
 
-        err = std::abs(err);
-        WARN("Failed to set real-time priority: {} ({})",
-            std::generic_category().message(err), err);
+        auto const err = std::make_error_code(res.error());
+        WARN("Failed to set real-time priority: {} ({})", err.message(), err.value());
     }
     /* Don't try to set the niceness for non-Linux systems. Standard POSIX has
      * niceness as a per-process attribute, while the intent here is for the
@@ -466,14 +474,14 @@ bool SetRTPriorityRTKit(int prio [[maybe_unused]])
      * Linux is known to have per-thread niceness.
      */
 #ifdef __linux__
-    if(nicemin < 0)
+    if(*nicemin < 0)
     {
-        TRACE("Making high priority with niceness {}", nicemin);
-        err = rtkit_make_high_priority(conn.get(), 0, nicemin);
-        if(err == 0) return true;
+        TRACE("Making high priority with niceness {}", *nicemin);
+        auto const res = rtkit.make_high_priority(0, *nicemin);
+        if(res.has_value()) return true;
 
-        err = std::abs(err);
-        WARN("Failed to set high priority: {} ({})", std::generic_category().message(err), err);
+        auto const err = std::make_error_code(res.error());
+        WARN("Failed to set high priority: {} ({})", err.message(), err.value());
     }
 #endif /* __linux__ */
 

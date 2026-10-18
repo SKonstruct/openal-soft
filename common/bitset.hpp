@@ -1,9 +1,11 @@
 #ifndef COMMON_BITSET_HPP
 #define COMMON_BITSET_HPP
 
-#include <bitset>
-#include <concepts>
+#include <bit>
+#include <cstdint>
+#include <functional>
 #include <type_traits>
+#include <utility>
 
 #include "opthelpers.h"
 
@@ -16,127 +18,127 @@ namespace detail_ {
 }
 
 template<typename T>
-concept scoped_enum = std::is_enum_v<T> and requires { detail_::test_int_conversion(T{}); };
+concept scoped_enum = std::is_enum_v<T> and requires(T t) { detail_::test_int_conversion(t); };
 
-/* The given enum type's "MaxValue" enumeration specifies the largest index
- * that will be used for the bitset.
- */
 template<scoped_enum EnumType>
 class bitset {
+    static constexpr auto num_bits = std::invoke([] {
+        /* The given enum type's "MaxValue" enumeration specifies the largest
+         * index that will be used for the bitset. Or the "Count" enumeration
+         * specifies the number of indices (it's undefined to access the
+         * "Count" index itself).
+         */
+        if constexpr(requires { EnumType::MaxValue; })
+        {
+            static_assert(not requires { EnumType::Count; }); /* Avoid ambiguity. */
+            return unsigned{al::to_underlying(EnumType::MaxValue) + 1};
+        }
+        else if constexpr(requires { EnumType::Count; })
+            return unsigned{al::to_underlying(EnumType::Count)};
+        else
+        {
+            static_assert(requires { EnumType::Count; } or requires { EnumType::MaxValue; });
+            return 1u;
+        }
+    });
+
+    static_assert(num_bits > 0 and num_bits <= 64);
+    using integer_t = std::conditional_t<std::cmp_less_equal(num_bits, 32), std::uint32_t,
+        std::uint64_t>;
+
     using UnderlyingType = std::make_unsigned_t<std::underlying_type_t<EnumType>>;
-    static constexpr auto Count = static_cast<UnderlyingType>(EnumType::MaxValue) + 1u;
 
-    using BitsetType = std::bitset<Count>;
-    BitsetType mBits;
+    static constexpr auto AllBits = integer_t{(((integer_t{1u} << (num_bits-1)) - 1u)<<1u) | 1u};
 
-    force_inline explicit constexpr
-    bitset(BitsetType const &rhs) noexcept : mBits(rhs) { }
+    integer_t mBits{0u};
 
 public:
-    using reference = typename BitsetType::reference;
-
     constexpr bitset() noexcept = default;
     constexpr bitset(bitset const &rhs) noexcept = default;
     constexpr ~bitset() noexcept = default;
 
-    force_inline explicit constexpr bitset(unsigned long long const arg) noexcept : mBits{arg} { }
+    explicit constexpr
+    bitset(unsigned long long const arg) noexcept : mBits{static_cast<integer_t>(arg&AllBits)} { }
 
-    template<typename CharT, typename Traits, typename Alloc> force_inline explicit constexpr
-    bitset(std::basic_string<CharT,Traits,Alloc> const& str,
-        typename std::basic_string<CharT,Traits,Alloc>::size_type const pos=0,
-        typename std::basic_string<CharT,Traits,Alloc>::size_type const
-            n=std::basic_string<CharT,Traits,Alloc>::npos,
-        CharT const zero=CharT{'0'}, CharT const one=CharT{'1'}) : mBits{str, pos, n, zero, one}
-    { }
-
-    template<typename CharT, typename Traits> force_inline explicit constexpr
-    bitset(std::basic_string_view<CharT,Traits> const str, std::size_t const pos=0,
-        std::size_t const n=static_cast<std::size_t>(-1), CharT const zero=CharT{'0'},
-        CharT const one=CharT{'1'}) : mBits{str, pos, n, zero, one}
-    { }
-
-    template<typename CharT> force_inline explicit constexpr
-    bitset(CharT const *const str, std::size_t const n=static_cast<std::size_t>(-1),
-        CharT const zero=CharT{'0'}, CharT const one=CharT{'1'}) : mBits{str, n, zero, one}
-    { }
+    [[nodiscard]] explicit constexpr
+    operator bool() const noexcept { return mBits != 0u; }
 
 
-    [[nodiscard]] force_inline constexpr
-    auto get_bitset() const noexcept LIFETIMEBOUND -> BitsetType const& { return mBits; }
+    constexpr
+    auto set(EnumType const e, bool const s=true) noexcept LIFETIMEBOUND -> bitset&
+    {
+        if(s) mBits |= integer_t{1u} << static_cast<UnderlyingType>(e);
+        else mBits &= ~(integer_t{1u} << static_cast<UnderlyingType>(e));
+        return *this;
+    }
 
-    [[nodiscard]] force_inline explicit constexpr
-    operator bool() const noexcept { return bool{mBits}; }
+    constexpr
+    auto set() noexcept LIFETIMEBOUND -> bitset& { mBits = AllBits; return *this; }
 
-
-    force_inline constexpr
-    auto set(EnumType const e, bool s=true) noexcept LIFETIMEBOUND -> bitset&
-    { mBits.set(static_cast<UnderlyingType>(e), s); return *this; }
-
-    force_inline constexpr
+    constexpr
     auto reset(EnumType const e) noexcept LIFETIMEBOUND -> bitset&
-    { mBits.reset(static_cast<UnderlyingType>(e)); return *this; }
+    { mBits &= ~(1u << static_cast<UnderlyingType>(e)); return *this; }
 
-    force_inline constexpr
-    auto reset() noexcept LIFETIMEBOUND -> bitset& { mBits.reset(); return *this; }
+    constexpr
+    auto reset() noexcept LIFETIMEBOUND -> bitset& { mBits = 0u; return *this; }
 
-    [[nodiscard]] force_inline constexpr
+    [[nodiscard]] constexpr
     auto test(EnumType const e) const noexcept -> bool
-    { return mBits.test(static_cast<UnderlyingType>(e)); }
+    { return (mBits & (integer_t{1u} << static_cast<UnderlyingType>(e))) != 0u; }
 
-    [[nodiscard]] force_inline constexpr auto any() const noexcept -> bool { return mBits.any(); }
-    [[nodiscard]] force_inline constexpr auto all() const noexcept -> bool { return mBits.all(); }
-    [[nodiscard]] force_inline constexpr
-    auto none() const noexcept -> bool { return mBits.none(); }
+    [[nodiscard]] constexpr
+    auto any() const noexcept -> bool { return mBits != 0u; }
+    [[nodiscard]] constexpr
+    auto all() const noexcept -> bool { return mBits == AllBits; }
+    [[nodiscard]] constexpr
+    auto none() const noexcept -> bool { return mBits == 0u; }
 
-    [[nodiscard]] force_inline constexpr
-    auto flip() const noexcept LIFETIMEBOUND -> bitset& { mBits.flip(); return *this; }
-    [[nodiscard]] force_inline constexpr
-    auto flip(EnumType const e) const noexcept LIFETIMEBOUND -> bitset&
-    { mBits.flip(static_cast<UnderlyingType>(e)); return *this; }
+    [[nodiscard]] constexpr
+    auto flip() noexcept LIFETIMEBOUND -> bitset& { mBits ^= AllBits; return *this; }
+    [[nodiscard]] constexpr
+    auto flip(EnumType const e) noexcept LIFETIMEBOUND -> bitset&
+    { mBits ^= integer_t{1u} << static_cast<UnderlyingType>(e); return *this; }
 
-    [[nodiscard]] force_inline constexpr
-    auto count() const noexcept -> std::size_t { return mBits.count(); }
-    [[nodiscard]] force_inline constexpr
-    auto size() const noexcept -> std::size_t { return mBits.size(); }
+    [[nodiscard]] constexpr
+    auto count() const noexcept -> std::size_t
+    { return static_cast<std::size_t>(std::popcount(mBits)); }
+    [[nodiscard]] static constexpr
+    auto size() noexcept -> std::size_t { return num_bits; }
 
-    [[nodiscard]] force_inline constexpr
-    auto operator[](EnumType const e) noexcept -> decltype(auto)
-    { return mBits[static_cast<UnderlyingType>(e)]; }
+    /* Cast to ull before bit flipping to passify MSVC. The constructor input
+     * will have invalid bits masked out to get the same result regardless.
+     */
+    [[nodiscard]] constexpr
+    auto operator~() const noexcept -> bitset
+    { return bitset{~static_cast<unsigned long long>(mBits)}; }
 
-    [[nodiscard]] force_inline constexpr
-    auto operator[](EnumType const e) const noexcept -> decltype(auto)
-    { return mBits[static_cast<UnderlyingType>(e)]; }
-
-    [[nodiscard]] force_inline constexpr
-    auto operator~() const noexcept -> bitset { return bitset{~mBits}; }
-
-    force_inline constexpr
-    auto operator|=(bitset const &rhs LIFETIMEBOUND) noexcept -> bitset&
+    constexpr
+    auto operator|=(bitset const &rhs) noexcept LIFETIMEBOUND -> bitset&
     { mBits |= rhs.mBits; return *this; }
 
-    force_inline constexpr
-    auto operator&=(bitset const &rhs LIFETIMEBOUND) noexcept -> bitset&
+    constexpr
+    auto operator&=(bitset const &rhs) noexcept LIFETIMEBOUND -> bitset&
     { mBits &= rhs.mBits; return *this; }
 
-    force_inline constexpr
-    auto operator^=(bitset const &rhs LIFETIMEBOUND) noexcept -> bitset&
+    constexpr
+    auto operator^=(bitset const &rhs) noexcept LIFETIMEBOUND -> bitset&
     { mBits ^= rhs.mBits; return *this; }
 
-    [[nodiscard]] force_inline friend constexpr
+    [[nodiscard]] friend constexpr
     auto operator|(bitset const &lhs, bitset const &rhs) noexcept -> bitset
     { return bitset{lhs.mBits | rhs.mBits}; }
 
-    [[nodiscard]] force_inline friend constexpr
+    [[nodiscard]] friend constexpr
     auto operator&(bitset const &lhs, bitset const &rhs) noexcept -> bitset
     { return bitset{lhs.mBits & rhs.mBits}; }
 
-    [[nodiscard]] force_inline friend constexpr
+    [[nodiscard]] friend constexpr
     auto operator^(bitset const &lhs, bitset const &rhs) noexcept -> bitset
     { return bitset{lhs.mBits ^ rhs.mBits}; }
 
-    [[nodiscard]] force_inline friend constexpr
+    [[nodiscard]] friend constexpr
     auto operator==(bitset const &lhs, bitset const &rhs) noexcept -> bool
-    { return lhs.mBits() == rhs.mBits(); }
+    { return lhs.mBits == rhs.mBits; }
 };
 
 } /* namespace al */

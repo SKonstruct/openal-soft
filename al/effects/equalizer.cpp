@@ -6,18 +6,23 @@
 
 #include "alnumeric.h"
 #include "effects.h"
-#include "gsl/gsl"
 
 #if ALSOFT_EAX
 #include "al/eax/effect.h"
 #include "al/eax/exception.h"
-#include "al/eax/utils.h"
+#if HAVE_CXXMODULES
+import eax.validator;
+#else
+#include "al/eax/validator.hpp"
+#endif
 #endif // ALSOFT_EAX
 
 #if HAVE_CXXMODULES
 import alc.context;
+import gsl;
 #else
 #include "alc/context.hpp"
+#include "gsl/gsl"
 #endif
 
 
@@ -42,86 +47,86 @@ consteval auto genDefaultProps() noexcept -> EffectProps
 
 constinit const EffectProps EqualizerEffectProps(genDefaultProps());
 
-void EqualizerEffectHandler::SetParami(al::Context *context, EqualizerProps&, ALenum param, int)
-{ context->throw_error(AL_INVALID_ENUM, "Invalid equalizer integer property {:#04x}", as_unsigned(param)); }
-void EqualizerEffectHandler::SetParamiv(al::Context *context, EqualizerProps&, ALenum param, const int*)
-{ context->throw_error(AL_INVALID_ENUM, "Invalid equalizer integer-vector property {:#04x}", as_unsigned(param)); }
-void EqualizerEffectHandler::SetParamf(al::Context *context, EqualizerProps &props, ALenum param, float val)
+void EqualizerEffectHandler::SetParami(al::Context& context, EqualizerProps&, ALenum param, int)
+{ context.throw_error(AL_INVALID_ENUM, "Invalid equalizer integer property {:#04x}", as_unsigned(param)); }
+void EqualizerEffectHandler::SetParamiv(al::Context& context, EqualizerProps&, ALenum param, const int*)
+{ context.throw_error(AL_INVALID_ENUM, "Invalid equalizer integer-vector property {:#04x}", as_unsigned(param)); }
+void EqualizerEffectHandler::SetParamf(al::Context& context, EqualizerProps &props, ALenum param, float val)
 {
     switch(param)
     {
     case AL_EQUALIZER_LOW_GAIN:
         if(!(val >= AL_EQUALIZER_MIN_LOW_GAIN && val <= AL_EQUALIZER_MAX_LOW_GAIN))
-            context->throw_error(AL_INVALID_VALUE, "Equalizer low-band gain out of range");
+            context.throw_error(AL_INVALID_VALUE, "Equalizer low-band gain out of range");
         props.LowGain = val;
         return;
 
     case AL_EQUALIZER_LOW_CUTOFF:
         if(!(val >= AL_EQUALIZER_MIN_LOW_CUTOFF && val <= AL_EQUALIZER_MAX_LOW_CUTOFF))
-            context->throw_error(AL_INVALID_VALUE, "Equalizer low-band cutoff out of range");
+            context.throw_error(AL_INVALID_VALUE, "Equalizer low-band cutoff out of range");
         props.LowCutoff = val;
         return;
 
     case AL_EQUALIZER_MID1_GAIN:
         if(!(val >= AL_EQUALIZER_MIN_MID1_GAIN && val <= AL_EQUALIZER_MAX_MID1_GAIN))
-            context->throw_error(AL_INVALID_VALUE, "Equalizer mid1-band gain out of range");
+            context.throw_error(AL_INVALID_VALUE, "Equalizer mid1-band gain out of range");
         props.Mid1Gain = val;
         return;
 
     case AL_EQUALIZER_MID1_CENTER:
         if(!(val >= AL_EQUALIZER_MIN_MID1_CENTER && val <= AL_EQUALIZER_MAX_MID1_CENTER))
-            context->throw_error(AL_INVALID_VALUE, "Equalizer mid1-band center out of range");
+            context.throw_error(AL_INVALID_VALUE, "Equalizer mid1-band center out of range");
         props.Mid1Center = val;
         return;
 
     case AL_EQUALIZER_MID1_WIDTH:
         if(!(val >= AL_EQUALIZER_MIN_MID1_WIDTH && val <= AL_EQUALIZER_MAX_MID1_WIDTH))
-            context->throw_error(AL_INVALID_VALUE, "Equalizer mid1-band width out of range");
+            context.throw_error(AL_INVALID_VALUE, "Equalizer mid1-band width out of range");
         props.Mid1Width = val;
         return;
 
     case AL_EQUALIZER_MID2_GAIN:
         if(!(val >= AL_EQUALIZER_MIN_MID2_GAIN && val <= AL_EQUALIZER_MAX_MID2_GAIN))
-            context->throw_error(AL_INVALID_VALUE, "Equalizer mid2-band gain out of range");
+            context.throw_error(AL_INVALID_VALUE, "Equalizer mid2-band gain out of range");
         props.Mid2Gain = val;
         return;
 
     case AL_EQUALIZER_MID2_CENTER:
         if(!(val >= AL_EQUALIZER_MIN_MID2_CENTER && val <= AL_EQUALIZER_MAX_MID2_CENTER))
-            context->throw_error(AL_INVALID_VALUE, "Equalizer mid2-band center out of range");
+            context.throw_error(AL_INVALID_VALUE, "Equalizer mid2-band center out of range");
         props.Mid2Center = val;
         return;
 
     case AL_EQUALIZER_MID2_WIDTH:
         if(!(val >= AL_EQUALIZER_MIN_MID2_WIDTH && val <= AL_EQUALIZER_MAX_MID2_WIDTH))
-            context->throw_error(AL_INVALID_VALUE, "Equalizer mid2-band width out of range");
+            context.throw_error(AL_INVALID_VALUE, "Equalizer mid2-band width out of range");
         props.Mid2Width = val;
         return;
 
     case AL_EQUALIZER_HIGH_GAIN:
         if(!(val >= AL_EQUALIZER_MIN_HIGH_GAIN && val <= AL_EQUALIZER_MAX_HIGH_GAIN))
-            context->throw_error(AL_INVALID_VALUE, "Equalizer high-band gain out of range");
+            context.throw_error(AL_INVALID_VALUE, "Equalizer high-band gain out of range");
         props.HighGain = val;
         return;
 
     case AL_EQUALIZER_HIGH_CUTOFF:
         if(!(val >= AL_EQUALIZER_MIN_HIGH_CUTOFF && val <= AL_EQUALIZER_MAX_HIGH_CUTOFF))
-            context->throw_error(AL_INVALID_VALUE, "Equalizer high-band cutoff out of range");
+            context.throw_error(AL_INVALID_VALUE, "Equalizer high-band cutoff out of range");
         props.HighCutoff = val;
         return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid equalizer float property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid equalizer float property {:#04x}",
         as_unsigned(param));
 }
-void EqualizerEffectHandler::SetParamfv(al::Context *context, EqualizerProps &props, ALenum param, const float *vals)
+void EqualizerEffectHandler::SetParamfv(al::Context& context, EqualizerProps &props, ALenum param, const float *vals)
 { SetParamf(context, props, param, *vals); }
 
-void EqualizerEffectHandler::GetParami(al::Context *context, const EqualizerProps&, ALenum param, int*)
-{ context->throw_error(AL_INVALID_ENUM, "Invalid equalizer integer property {:#04x}", as_unsigned(param)); }
-void EqualizerEffectHandler::GetParamiv(al::Context *context, const EqualizerProps&, ALenum param, int*)
-{ context->throw_error(AL_INVALID_ENUM, "Invalid equalizer integer-vector property {:#04x}", as_unsigned(param)); }
-void EqualizerEffectHandler::GetParamf(al::Context *context, const EqualizerProps &props, ALenum param, float *val)
+void EqualizerEffectHandler::GetParami(al::Context& context, const EqualizerProps&, ALenum param, int*)
+{ context.throw_error(AL_INVALID_ENUM, "Invalid equalizer integer property {:#04x}", as_unsigned(param)); }
+void EqualizerEffectHandler::GetParamiv(al::Context& context, const EqualizerProps&, ALenum param, int*)
+{ context.throw_error(AL_INVALID_ENUM, "Invalid equalizer integer-vector property {:#04x}", as_unsigned(param)); }
+void EqualizerEffectHandler::GetParamf(al::Context& context, const EqualizerProps &props, ALenum param, float *val)
 {
     switch(param)
     {
@@ -137,22 +142,27 @@ void EqualizerEffectHandler::GetParamf(al::Context *context, const EqualizerProp
     case AL_EQUALIZER_HIGH_CUTOFF: *val = props.HighCutoff; return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid equalizer float property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid equalizer float property {:#04x}",
         as_unsigned(param));
 }
-void EqualizerEffectHandler::GetParamfv(al::Context *context, const EqualizerProps &props, ALenum param, float *vals)
+void EqualizerEffectHandler::GetParamfv(al::Context& context, const EqualizerProps &props, ALenum param, float *vals)
 { GetParamf(context, props, param, vals); }
 
 
 #if ALSOFT_EAX
 namespace {
 
-using EqualizerCommitter = EaxCommitter<EaxEqualizerCommitter>;
+/* NOLINTNEXTLINE(clazy-copyable-polymorphic) Exceptions must be copyable. */
+struct EaxEqualizerException final : EaxException {
+    explicit EaxEqualizerException(std::string_view const message)
+        : EaxException{"EAX_EQUALIZER_EFFECT", message}
+    { }
+};
 
 struct LowGainValidator {
     void operator()(eax_long const lLowGain) const
     {
-        eax_validate_range<EqualizerCommitter::Exception>(
+        eax_validate_range<EaxEqualizerException>(
             "Low Gain",
             lLowGain,
             EAXEQUALIZER_MINLOWGAIN,
@@ -163,7 +173,7 @@ struct LowGainValidator {
 struct LowCutOffValidator {
     void operator()(float const flLowCutOff) const
     {
-        eax_validate_range<EqualizerCommitter::Exception>(
+        eax_validate_range<EaxEqualizerException>(
             "Low Cutoff",
             flLowCutOff,
             EAXEQUALIZER_MINLOWCUTOFF,
@@ -174,7 +184,7 @@ struct LowCutOffValidator {
 struct Mid1GainValidator {
     void operator()(eax_long const lMid1Gain) const
     {
-        eax_validate_range<EqualizerCommitter::Exception>(
+        eax_validate_range<EaxEqualizerException>(
             "Mid1 Gain",
             lMid1Gain,
             EAXEQUALIZER_MINMID1GAIN,
@@ -185,7 +195,7 @@ struct Mid1GainValidator {
 struct Mid1CenterValidator {
     void operator()(float const flMid1Center) const
     {
-        eax_validate_range<EqualizerCommitter::Exception>(
+        eax_validate_range<EaxEqualizerException>(
             "Mid1 Center",
             flMid1Center,
             EAXEQUALIZER_MINMID1CENTER,
@@ -196,7 +206,7 @@ struct Mid1CenterValidator {
 struct Mid1WidthValidator {
     void operator()(float const flMid1Width) const
     {
-        eax_validate_range<EqualizerCommitter::Exception>(
+        eax_validate_range<EaxEqualizerException>(
             "Mid1 Width",
             flMid1Width,
             EAXEQUALIZER_MINMID1WIDTH,
@@ -207,7 +217,7 @@ struct Mid1WidthValidator {
 struct Mid2GainValidator {
     void operator()(eax_long const lMid2Gain) const
     {
-        eax_validate_range<EqualizerCommitter::Exception>(
+        eax_validate_range<EaxEqualizerException>(
             "Mid2 Gain",
             lMid2Gain,
             EAXEQUALIZER_MINMID2GAIN,
@@ -218,7 +228,7 @@ struct Mid2GainValidator {
 struct Mid2CenterValidator {
     void operator()(float const flMid2Center) const
     {
-        eax_validate_range<EqualizerCommitter::Exception>(
+        eax_validate_range<EaxEqualizerException>(
             "Mid2 Center",
             flMid2Center,
             EAXEQUALIZER_MINMID2CENTER,
@@ -229,7 +239,7 @@ struct Mid2CenterValidator {
 struct Mid2WidthValidator {
     void operator()(float const flMid2Width) const
     {
-        eax_validate_range<EqualizerCommitter::Exception>(
+        eax_validate_range<EaxEqualizerException>(
             "Mid2 Width",
             flMid2Width,
             EAXEQUALIZER_MINMID2WIDTH,
@@ -240,7 +250,7 @@ struct Mid2WidthValidator {
 struct HighGainValidator {
     void operator()(eax_long const lHighGain) const
     {
-        eax_validate_range<EqualizerCommitter::Exception>(
+        eax_validate_range<EaxEqualizerException>(
             "High Gain",
             lHighGain,
             EAXEQUALIZER_MINHIGHGAIN,
@@ -251,7 +261,7 @@ struct HighGainValidator {
 struct HighCutOffValidator {
     void operator()(float const flHighCutOff) const
     {
-        eax_validate_range<EqualizerCommitter::Exception>(
+        eax_validate_range<EaxEqualizerException>(
             "High Cutoff",
             flHighCutOff,
             EAXEQUALIZER_MINHIGHCUTOFF,
@@ -277,17 +287,11 @@ struct AllValidator {
 
 } // namespace
 
-template<> /* NOLINTNEXTLINE(clazy-copyable-polymorphic) Exceptions must be copyable. */
-struct EqualizerCommitter::Exception final : EaxException {
-    explicit Exception(const std::string_view message)
-        : EaxException{"EAX_EQUALIZER_EFFECT", message}
-    { }
-};
-
 template<> [[noreturn]]
-void EqualizerCommitter::fail(const std::string_view message)
-{ throw Exception{message}; }
+void EaxEqualizerCommitter::fail(std::string_view const message)
+{ throw EaxEqualizerException{message}; }
 
+template<>
 auto EaxEqualizerCommitter::commit(const EAXEQUALIZERPROPERTIES &props) const -> bool
 {
     if(auto *cur = std::get_if<EAXEQUALIZERPROPERTIES>(&mEaxProps); cur && *cur == props)
@@ -309,6 +313,7 @@ auto EaxEqualizerCommitter::commit(const EAXEQUALIZERPROPERTIES &props) const ->
     return true;
 }
 
+template<>
 void EaxEqualizerCommitter::SetDefaults(EaxEffectProps &props)
 {
     props = EAXEQUALIZERPROPERTIES{
@@ -324,6 +329,7 @@ void EaxEqualizerCommitter::SetDefaults(EaxEffectProps &props)
         .flHighCutOff = EAXEQUALIZER_DEFAULTHIGHCUTOFF};
 }
 
+template<>
 void EaxEqualizerCommitter::Get(const EaxCall &call, const EAXEQUALIZERPROPERTIES &props)
 {
     switch(call.get_property_id())
@@ -344,6 +350,7 @@ void EaxEqualizerCommitter::Get(const EaxCall &call, const EAXEQUALIZERPROPERTIE
     }
 }
 
+template<>
 void EaxEqualizerCommitter::Set(const EaxCall &call, EAXEQUALIZERPROPERTIES &props)
 {
     switch(call.get_property_id())

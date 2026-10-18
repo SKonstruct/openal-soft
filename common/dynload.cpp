@@ -8,14 +8,20 @@
 #ifdef _WIN32
 #include <windows.h>
 
-#include "alformat.hpp"
-#include "gsl/gsl"
 #include "strutils.hpp"
 
-auto LoadLib(gsl::czstring const name) -> al::expected<void*, std::string>
+#if HAVE_CXXMODULES
+import format;
+import gsl;
+#else
+#include "alformat.hpp"
+#include "gsl/gsl"
+#endif
+
+auto LoadLib(al::zstring_view const name) -> al::expected<LibHandle, std::string>
 {
     if(auto const res = LoadLibraryW(utf8_to_wstr(name).c_str())) [[likely]]
-        return res;
+        return reinterpret_cast<LibHandle>(res); /* NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) */
     auto const err = GetLastError();
     auto message = std::wstring{};
     message.resize(1024u);
@@ -30,12 +36,17 @@ auto LoadLib(gsl::czstring const name) -> al::expected<void*, std::string>
     return al::unexpected(al::format("LoadLibraryW error: {}", err));
 }
 
-void CloseLib(void *const handle)
-{ FreeLibrary(static_cast<HMODULE>(handle)); }
-
-auto GetSymbol(void *const handle, gsl::czstring const name) -> al::expected<void*, std::string>
+void CloseLib(LibHandle const handle)
 {
-    if(auto const sym = GetProcAddress(static_cast<HMODULE>(handle), name)) [[likely]]
+    /* NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) */
+    FreeLibrary(reinterpret_cast<HMODULE>(handle));
+}
+
+auto GetSymbol_(LibHandle const handle, al::zstring_view const name)
+    -> al::expected<void*, std::string>
+{
+    /* NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) */
+    if(auto const sym = GetProcAddress(reinterpret_cast<HMODULE>(handle), name.c_str())) [[likely]]
     {
         /* NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) */
         return reinterpret_cast<void*>(sym);
@@ -58,25 +69,28 @@ auto GetSymbol(void *const handle, gsl::czstring const name) -> al::expected<voi
 
 #include <dlfcn.h>
 
-auto LoadLib(gsl::czstring const name) -> al::expected<void*, std::string>
+auto LoadLib(al::zstring_view const name) -> al::expected<LibHandle, std::string>
 {
-    dlerror();
-    auto *const handle = dlopen(name, RTLD_NOW);
+    if(auto *const handle = dlopen(name.c_str(), RTLD_NOW))
+        return static_cast<LibHandle>(handle);
+
     if(auto *const err = dlerror())
         return al::unexpected(err);
-    return handle;
+    return al::unexpected("dlerror() == NULL");
 }
 
-void CloseLib(void *const handle)
+void CloseLib(LibHandle const handle)
 { dlclose(handle); }
 
-auto GetSymbol(void *const handle, gsl::czstring const name) -> al::expected<void*, std::string>
+auto GetSymbol_(LibHandle const handle, al::zstring_view const name)
+    -> al::expected<void*, std::string>
 {
-    dlerror();
-    auto *const sym = dlsym(handle, name);
+    if(auto *const sym = dlsym(handle, name.c_str()))
+        return sym;
+
     if(auto *const err = dlerror())
         return al::unexpected(err);
-    return sym;
+    return al::unexpected("dlerror() == NULL");
 }
 #endif
 

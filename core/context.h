@@ -5,18 +5,16 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <thread>
 #include <vector>
 
-#include "alnumeric.h"
-#include "altypes.hpp"
 #include "async_event.h"
 #include "atomic.h"
 #include "bitset.hpp"
 #include "flexarray.h"
-#include "gsl/gsl"
 #include "opthelpers.h"
 #include "ringbuffer.h"
 #include "vecmat.h"
@@ -33,7 +31,7 @@ inline constexpr auto SpeedOfSoundMetersPerSec = 343.3f;
 
 inline constexpr auto AirAbsorbGainHF = 0.99426f; /* -0.05dB */
 
-enum class DistanceModel : u8::value_t {
+enum class DistanceModel : std::uint8_t {
     Disable,
     Inverse, InverseClamped,
     Linear, LinearClamped,
@@ -84,7 +82,7 @@ struct ContextParams {
 };
 
 struct ContextBase {
-    gsl::not_null<DeviceBase*> const mDevice;
+    DeviceBase &mDevice;
 
     /* Counter for the pre-mixing updates, in 31.1 fixed point (lowest bit
      * indicates if updates are currently happening).
@@ -163,7 +161,7 @@ struct ContextBase {
     std::vector<VoicePropsCluster> mVoicePropClusters;
 
 
-    auto getEffectSlot() LIFETIMEBOUND -> gsl::not_null<EffectSlotBase*>;
+    auto getEffectSlot() LIFETIMEBOUND -> EffectSlotBase&;
 
     using EffectSlotCluster = std::unique_ptr<std::array<EffectSlotBase,4>>;
     std::vector<EffectSlotCluster> mEffectSlotClusters;
@@ -181,7 +179,7 @@ struct ContextBase {
     ContextBase& operator=(const ContextBase&) = delete;
 
 protected:
-    explicit ContextBase(gsl::not_null<DeviceBase*> device LIFETIMEBOUND);
+    explicit ContextBase(DeviceBase &device LIFETIMEBOUND);
     ~ContextBase();
 };
 

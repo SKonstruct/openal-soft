@@ -4,7 +4,9 @@
 
 #include <string_view>
 
+#include "api.h"
 #include "exception.h"
+
 
 namespace {
 
@@ -199,25 +201,4 @@ EaxCall::EaxCall(EaxCallType type, AL_GUID const& property_set_guid, ALuint prop
 [[noreturn]] void EaxCall::fail_too_small()
 {
     fail("Property buffer too small.");
-}
-
-EaxCall create_eax_call(
-    EaxCallType type,
-    AL_GUID const* property_set_id,
-    ALuint property_id,
-    ALuint property_source_id,
-    ALvoid* property_buffer,
-    ALuint property_size)
-{
-    if(!property_set_id)
-        throw EaxCallException{"Null property set ID."};
-
-    return EaxCall{
-        type,
-        *property_set_id,
-        property_id,
-        property_source_id,
-        property_buffer,
-        property_size
-    };
 }

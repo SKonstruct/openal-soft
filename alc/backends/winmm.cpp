@@ -20,10 +20,7 @@
 
 #include "config.h"
 
-#include "winmm.h"
-
-#include <cstdlib>
-#include <cstdio>
+#include "winmm.hpp"
 
 #include <windows.h>
 #include <mmsystem.h>
@@ -40,21 +37,31 @@
 
 #include "alnumeric.h"
 #include "althrd_setname.h"
-#include "core/device.h"
-#include "core/helpers.h"
-#include "gsl/gsl"
 #include "ringbuffer.h"
 #include "strutils.hpp"
 #include "vector.h"
+#include "zudl.hpp"
 
 #ifndef WAVE_FORMAT_IEEE_FLOAT
 #define WAVE_FORMAT_IEEE_FLOAT  0x0003
 #endif
 
 #if HAVE_CXXMODULES
+import backends.exception;
+import core.device;
+import core.helpers;
+import format;
+import gsl;
 import logging;
+import types;
 #else
+#include "alc/backends/exception.hpp"
+#include "alformat.hpp"
+#include "altypes.hpp"
+#include "core/device.h"
+#include "core/helpers.hpp"
 #include "core/logging.h"
+#include "gsl/gsl"
 #endif
 
 namespace {
@@ -121,9 +128,8 @@ void ProbeCaptureDevices()
 }
 
 
-struct WinMMPlayback final : public BackendBase {
-    explicit WinMMPlayback(gsl::not_null<DeviceBase*> const device) noexcept : BackendBase{device}
-    { }
+struct WinMMPlayback final : BackendBase {
+    using BackendBase::BackendBase;
     ~WinMMPlayback() override;
 
     void CALLBACK waveOutProc(HWAVEOUT device, UINT msg, DWORD_PTR param1, DWORD_PTR param2) noexcept;
@@ -176,7 +182,7 @@ FORCE_ALIGN void WinMMPlayback::mixerProc()
     althrd_setname(GetMixerThreadName());
 
     while(!mKillNow.load(std::memory_order_acquire)
-        && mDevice->Connected.load(std::memory_order_acquire))
+        && mDevice.Connected.load(std::memory_order_acquire))
     {
         mWritable.wait(0, std::memory_order_acquire);
         auto todo = mWritable.load(std::memory_order_acquire);
@@ -187,7 +193,7 @@ FORCE_ALIGN void WinMMPlayback::mixerProc()
             auto &waveHdr = mWaveBuffer[widx];
             if(++widx == mWaveBuffer.size()) widx = 0;
 
-            mDevice->renderSamples(waveHdr.lpData, mDevice->mUpdateSize, mFormat.nChannels);
+            mDevice.renderSamples(waveHdr.lpData, mDevice.mUpdateSize, mFormat.nChannels);
             mWritable.fetch_sub(1, std::memory_order_acq_rel);
             waveOutWrite(mOutHdl, &waveHdr, sizeof(WAVEHDR));
             --todo;
@@ -210,7 +216,7 @@ void WinMMPlayback::open(std::string_view name)
             name};
     auto const DeviceID = gsl::narrow_cast<UINT>(std::distance(PlaybackDevices.begin(), iter));
 
-    auto fmttype = mDevice->FmtType;
+    auto fmttype = mDevice.FmtType;
     auto format = WAVEFORMATEX{};
     do {
         format = WAVEFORMATEX{};
@@ -227,9 +233,9 @@ void WinMMPlayback::open(std::string_view name)
             else
                 format.wBitsPerSample = 16;
         }
-        format.nChannels = ((mDevice->FmtChans == DevFmtMono) ? 1 : 2);
+        format.nChannels = ((mDevice.FmtChans == DevFmtMono) ? 1 : 2);
         format.nBlockAlign = gsl::narrow_cast<WORD>(format.wBitsPerSample * format.nChannels / 8);
-        format.nSamplesPerSec = mDevice->mSampleRate;
+        format.nSamplesPerSec = mDevice.mSampleRate;
         format.nAvgBytesPerSec = format.nSamplesPerSec * format.nBlockAlign;
         format.cbSize = 0;
 
@@ -252,17 +258,17 @@ void WinMMPlayback::open(std::string_view name)
 
 auto WinMMPlayback::reset() -> bool
 {
-    mDevice->mBufferSize = gsl::narrow_cast<unsigned>(u64::value_t{mDevice->mBufferSize} *
-        mFormat.nSamplesPerSec / mDevice->mSampleRate);
-    mDevice->mBufferSize = (mDevice->mBufferSize+3) & ~0x3u;
-    mDevice->mUpdateSize = mDevice->mBufferSize / 4;
-    mDevice->mSampleRate = mFormat.nSamplesPerSec;
+    mDevice.mBufferSize = gsl::narrow_cast<unsigned>(u64::value_t{mDevice.mBufferSize} *
+        mFormat.nSamplesPerSec / mDevice.mSampleRate);
+    mDevice.mBufferSize = (mDevice.mBufferSize+3) & ~0x3u;
+    mDevice.mUpdateSize = mDevice.mBufferSize / 4;
+    mDevice.mSampleRate = mFormat.nSamplesPerSec;
 
     auto clearval = char{0};
     if(mFormat.wFormatTag == WAVE_FORMAT_IEEE_FLOAT)
     {
         if(mFormat.wBitsPerSample == 32)
-            mDevice->FmtType = DevFmtFloat;
+            mDevice.FmtType = DevFmtFloat;
         else
         {
             ERR("Unhandled IEEE float sample depth: {}", mFormat.wBitsPerSample);
@@ -272,10 +278,10 @@ auto WinMMPlayback::reset() -> bool
     else if(mFormat.wFormatTag == WAVE_FORMAT_PCM)
     {
         if(mFormat.wBitsPerSample == 16)
-            mDevice->FmtType = DevFmtShort;
+            mDevice.FmtType = DevFmtShort;
         else if(mFormat.wBitsPerSample == 8)
         {
-            mDevice->FmtType = DevFmtUByte;
+            mDevice.FmtType = DevFmtUByte;
             clearval = char{-0x80};
         }
         else
@@ -291,9 +297,9 @@ auto WinMMPlayback::reset() -> bool
     }
 
     if(mFormat.nChannels >= 2)
-        mDevice->FmtChans = DevFmtStereo;
+        mDevice.FmtChans = DevFmtStereo;
     else if(mFormat.nChannels == 1)
-        mDevice->FmtChans = DevFmtMono;
+        mDevice.FmtChans = DevFmtMono;
     else
     {
         ERR("Unhandled channel count: {}", mFormat.nChannels);
@@ -301,7 +307,7 @@ auto WinMMPlayback::reset() -> bool
     }
     setDefaultWFXChannelOrder();
 
-    auto const BufferSize = mDevice->mUpdateSize * mFormat.nChannels * mDevice->bytesFromFmt();
+    auto const BufferSize = mDevice.mUpdateSize * mFormat.nChannels * mDevice.bytesFromFmt();
 
     decltype(mBuffer)(BufferSize*mWaveBuffer.size(), clearval).swap(mBuffer);
     auto bufferiter = mBuffer.begin();
@@ -357,7 +363,7 @@ void WinMMPlayback::stop()
 
 
 struct WinMMCapture final : public BackendBase {
-    explicit WinMMCapture(gsl::not_null<DeviceBase*> device) noexcept : BackendBase{device} { }
+    using BackendBase::BackendBase;
     ~WinMMCapture() override;
 
     void CALLBACK waveInProc(HWAVEIN device, UINT msg, DWORD_PTR param1, DWORD_PTR param2) noexcept;
@@ -413,7 +419,7 @@ void WinMMCapture::captureProc()
     althrd_setname(GetRecordThreadName());
 
     while(!mKillNow.load(std::memory_order_acquire)
-        && mDevice->Connected.load(std::memory_order_acquire))
+        && mDevice.Connected.load(std::memory_order_acquire))
     {
         mReadable.wait(0, std::memory_order_acquire);
         auto todo = mReadable.load(std::memory_order_acquire);
@@ -448,7 +454,7 @@ void WinMMCapture::open(std::string_view name)
             name};
     auto const DeviceID = gsl::narrow_cast<UINT>(std::distance(CaptureDevices.begin(), iter));
 
-    switch(mDevice->FmtChans)
+    switch(mDevice.FmtChans)
     {
     case DevFmtMono:
     case DevFmtStereo:
@@ -463,11 +469,11 @@ void WinMMCapture::open(std::string_view name)
     case DevFmtX3D71:
     case DevFmtAmbi3D:
         throw al::backend_exception{al::backend_error::DeviceError, "{} capture not supported",
-            DevFmtChannelsString(mDevice->FmtChans)};
+            DevFmtChannelsString(mDevice.FmtChans)};
     }
 
     auto clearval = char{0};
-    switch(mDevice->FmtType)
+    switch(mDevice.FmtType)
     {
     case DevFmtUByte:
         clearval = char{-0x80};
@@ -481,16 +487,16 @@ void WinMMCapture::open(std::string_view name)
     case DevFmtUShort:
     case DevFmtUInt:
         throw al::backend_exception{al::backend_error::DeviceError, "{} samples not supported",
-            DevFmtTypeString(mDevice->FmtType)};
+            DevFmtTypeString(mDevice.FmtType)};
     }
 
     mFormat = WAVEFORMATEX{};
-    mFormat.wFormatTag = (mDevice->FmtType == DevFmtFloat) ?
+    mFormat.wFormatTag = (mDevice.FmtType == DevFmtFloat) ?
         WAVE_FORMAT_IEEE_FLOAT : WAVE_FORMAT_PCM;
-    mFormat.nChannels = gsl::narrow_cast<WORD>(mDevice->channelsFromFmt());
-    mFormat.wBitsPerSample = gsl::narrow_cast<WORD>(mDevice->bytesFromFmt() * 8);
+    mFormat.nChannels = gsl::narrow_cast<WORD>(mDevice.channelsFromFmt());
+    mFormat.wBitsPerSample = gsl::narrow_cast<WORD>(mDevice.bytesFromFmt() * 8);
     mFormat.nBlockAlign = gsl::narrow_cast<WORD>(mFormat.wBitsPerSample * mFormat.nChannels / 8);
-    mFormat.nSamplesPerSec = mDevice->mSampleRate;
+    mFormat.nSamplesPerSec = mDevice.mSampleRate;
     mFormat.nAvgBytesPerSec = mFormat.nSamplesPerSec * mFormat.nBlockAlign;
     mFormat.cbSize = 0;
 
@@ -506,7 +512,7 @@ void WinMMCapture::open(std::string_view name)
 
     // Allocate circular memory buffer for the captured audio
     // Make sure circular buffer is at least 100ms in size
-    auto const CapturedDataSize = std::max<std::size_t>(mDevice->mBufferSize,
+    auto const CapturedDataSize = std::max<std::size_t>(mDevice.mBufferSize,
         BufferSize*mWaveBuffer.size());
 
     mRing = RingBuffer<std::byte>::Create(CapturedDataSize, mFormat.nBlockAlign, false);
@@ -602,8 +608,7 @@ auto WinMMBackendFactory::enumerate(BackendType const type) -> std::vector<std::
     return outnames;
 }
 
-auto WinMMBackendFactory::createBackend(gsl::not_null<DeviceBase*> const device,
-    BackendType const type) -> BackendPtr
+auto WinMMBackendFactory::createBackend(DeviceBase &device, BackendType const type) -> BackendPtr
 {
     if(type == BackendType::Playback)
         return BackendPtr{new WinMMPlayback{device}};

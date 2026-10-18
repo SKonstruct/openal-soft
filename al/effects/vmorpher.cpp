@@ -7,21 +7,26 @@
 #include "AL/al.h"
 #include "AL/efx.h"
 
-#include "alformat.hpp"
 #include "alnumeric.h"
 #include "effects.h"
 
 #if ALSOFT_EAX
 #include "al/eax/effect.h"
 #include "al/eax/exception.h"
-#include "al/eax/utils.h"
+#if HAVE_CXXMODULES
+import eax.validator;
+#else
+#include "al/eax/validator.hpp"
+#endif
 #endif // ALSOFT_EAX
 
 #if HAVE_CXXMODULES
 import alc.context;
+import format;
 import gsl;
 #else
 #include "alc/context.hpp"
+#include "alformat.hpp"
 #include "gsl/gsl"
 #endif
 
@@ -147,7 +152,7 @@ consteval auto genDefaultProps() noexcept -> EffectProps
 
 constinit const EffectProps VmorpherEffectProps(genDefaultProps());
 
-void VmorpherEffectHandler::SetParami(al::Context *context, VmorpherProps &props, ALenum param, int val)
+void VmorpherEffectHandler::SetParami(al::Context& context, VmorpherProps &props, ALenum param, int val)
 {
     switch(param)
     {
@@ -155,13 +160,13 @@ void VmorpherEffectHandler::SetParami(al::Context *context, VmorpherProps &props
         if(auto phenomeopt = PhenomeFromEnum(val))
             props.PhonemeA = *phenomeopt;
         else
-            context->throw_error(AL_INVALID_VALUE,
+            context.throw_error(AL_INVALID_VALUE,
                 "Vocal morpher phoneme-a out of range: {:#04x}", as_unsigned(val));
         return;
 
     case AL_VOCAL_MORPHER_PHONEMEA_COARSE_TUNING:
         if(!(val >= AL_VOCAL_MORPHER_MIN_PHONEMEA_COARSE_TUNING && val <= AL_VOCAL_MORPHER_MAX_PHONEMEA_COARSE_TUNING))
-            context->throw_error(AL_INVALID_VALUE,
+            context.throw_error(AL_INVALID_VALUE,
                 "Vocal morpher phoneme-a coarse tuning out of range");
         props.PhonemeACoarseTuning = val;
         return;
@@ -170,13 +175,13 @@ void VmorpherEffectHandler::SetParami(al::Context *context, VmorpherProps &props
         if(auto phenomeopt = PhenomeFromEnum(val))
             props.PhonemeB = *phenomeopt;
         else
-            context->throw_error(AL_INVALID_VALUE,
+            context.throw_error(AL_INVALID_VALUE,
                 "Vocal morpher phoneme-b out of range: {:#04x}", as_unsigned(val));
         return;
 
     case AL_VOCAL_MORPHER_PHONEMEB_COARSE_TUNING:
         if(!(val >= AL_VOCAL_MORPHER_MIN_PHONEMEB_COARSE_TUNING && val <= AL_VOCAL_MORPHER_MAX_PHONEMEB_COARSE_TUNING))
-            context->throw_error(AL_INVALID_VALUE,
+            context.throw_error(AL_INVALID_VALUE,
                 "Vocal morpher phoneme-b coarse tuning out of range");
         props.PhonemeBCoarseTuning = val;
         return;
@@ -185,34 +190,34 @@ void VmorpherEffectHandler::SetParami(al::Context *context, VmorpherProps &props
         if(auto formopt = WaveformFromEmum(val))
             props.Waveform = *formopt;
         else
-            context->throw_error(AL_INVALID_VALUE, "Vocal morpher waveform out of range: {:#04x}",
+            context.throw_error(AL_INVALID_VALUE, "Vocal morpher waveform out of range: {:#04x}",
                 as_unsigned(val));
         return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid vocal morpher integer property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid vocal morpher integer property {:#04x}",
         as_unsigned(param));
 }
-void VmorpherEffectHandler::SetParamiv(al::Context *context, VmorpherProps &props, ALenum param, const int *vals)
+void VmorpherEffectHandler::SetParamiv(al::Context& context, VmorpherProps &props, ALenum param, const int *vals)
 { SetParami(context, props, param, *vals); }
-void VmorpherEffectHandler::SetParamf(al::Context *context, VmorpherProps &props, ALenum param, float val)
+void VmorpherEffectHandler::SetParamf(al::Context& context, VmorpherProps &props, ALenum param, float val)
 {
     switch(param)
     {
     case AL_VOCAL_MORPHER_RATE:
         if(!(val >= AL_VOCAL_MORPHER_MIN_RATE && val <= AL_VOCAL_MORPHER_MAX_RATE))
-            context->throw_error(AL_INVALID_VALUE, "Vocal morpher rate out of range");
+            context.throw_error(AL_INVALID_VALUE, "Vocal morpher rate out of range");
         props.Rate = val;
         return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid vocal morpher float property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid vocal morpher float property {:#04x}",
         as_unsigned(param));
 }
-void VmorpherEffectHandler::SetParamfv(al::Context *context, VmorpherProps &props, ALenum param, const float *vals)
+void VmorpherEffectHandler::SetParamfv(al::Context& context, VmorpherProps &props, ALenum param, const float *vals)
 { SetParamf(context, props, param, *vals); }
 
-void VmorpherEffectHandler::GetParami(al::Context *context, const VmorpherProps &props, ALenum param, int* val)
+void VmorpherEffectHandler::GetParami(al::Context& context, const VmorpherProps &props, ALenum param, int* val)
 {
     switch(param)
     {
@@ -223,34 +228,39 @@ void VmorpherEffectHandler::GetParami(al::Context *context, const VmorpherProps 
     case AL_VOCAL_MORPHER_WAVEFORM: *val = EnumFromWaveform(props.Waveform); return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid vocal morpher integer property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid vocal morpher integer property {:#04x}",
         as_unsigned(param));
 }
-void VmorpherEffectHandler::GetParamiv(al::Context *context, const VmorpherProps &props, ALenum param, int *vals)
+void VmorpherEffectHandler::GetParamiv(al::Context& context, const VmorpherProps &props, ALenum param, int *vals)
 { GetParami(context, props, param, vals); }
-void VmorpherEffectHandler::GetParamf(al::Context *context, const VmorpherProps &props, ALenum param, float *val)
+void VmorpherEffectHandler::GetParamf(al::Context& context, const VmorpherProps &props, ALenum param, float *val)
 {
     switch(param)
     {
     case AL_VOCAL_MORPHER_RATE: *val = props.Rate; return;
     }
 
-    context->throw_error(AL_INVALID_ENUM, "Invalid vocal morpher float property {:#04x}",
+    context.throw_error(AL_INVALID_ENUM, "Invalid vocal morpher float property {:#04x}",
         as_unsigned(param));
 }
-void VmorpherEffectHandler::GetParamfv(al::Context *context, const VmorpherProps &props, ALenum param, float *vals)
+void VmorpherEffectHandler::GetParamfv(al::Context& context, const VmorpherProps &props, ALenum param, float *vals)
 { GetParamf(context, props, param, vals); }
 
 
 #if ALSOFT_EAX
 namespace {
 
-using VocalMorpherCommitter = EaxCommitter<EaxVocalMorpherCommitter>;
+/* NOLINTNEXTLINE(clazy-copyable-polymorphic) Exceptions must be copyable. */
+struct EaxVocalMorpherException final : EaxException {
+    explicit EaxVocalMorpherException(std::string_view const message)
+        : EaxException{"EAX_VOCAL_MORPHER_EFFECT", message}
+    { }
+};
 
 struct PhonemeAValidator {
     void operator()(eax_ulong const ulPhonemeA) const
     {
-        eax_validate_range<VocalMorpherCommitter::Exception>(
+        eax_validate_range<EaxVocalMorpherException>(
             "Phoneme A",
             ulPhonemeA,
             EAXVOCALMORPHER_MINPHONEMEA,
@@ -261,7 +271,7 @@ struct PhonemeAValidator {
 struct PhonemeACoarseTuningValidator {
     void operator()(eax_long const lPhonemeACoarseTuning) const
     {
-        eax_validate_range<VocalMorpherCommitter::Exception>(
+        eax_validate_range<EaxVocalMorpherException>(
             "Phoneme A Coarse Tuning",
             lPhonemeACoarseTuning,
             EAXVOCALMORPHER_MINPHONEMEACOARSETUNING,
@@ -272,7 +282,7 @@ struct PhonemeACoarseTuningValidator {
 struct PhonemeBValidator {
     void operator()(eax_ulong const ulPhonemeB) const
     {
-        eax_validate_range<VocalMorpherCommitter::Exception>(
+        eax_validate_range<EaxVocalMorpherException>(
             "Phoneme B",
             ulPhonemeB,
             EAXVOCALMORPHER_MINPHONEMEB,
@@ -283,7 +293,7 @@ struct PhonemeBValidator {
 struct PhonemeBCoarseTuningValidator {
     void operator()(eax_long const lPhonemeBCoarseTuning) const
     {
-        eax_validate_range<VocalMorpherCommitter::Exception>(
+        eax_validate_range<EaxVocalMorpherException>(
             "Phoneme B Coarse Tuning",
             lPhonemeBCoarseTuning,
             EAXVOCALMORPHER_MINPHONEMEBCOARSETUNING,
@@ -294,7 +304,7 @@ struct PhonemeBCoarseTuningValidator {
 struct WaveformValidator {
     void operator()(eax_ulong const ulWaveform) const
     {
-        eax_validate_range<VocalMorpherCommitter::Exception>(
+        eax_validate_range<EaxVocalMorpherException>(
             "Waveform",
             ulWaveform,
             EAXVOCALMORPHER_MINWAVEFORM,
@@ -305,7 +315,7 @@ struct WaveformValidator {
 struct RateValidator {
     void operator()(float const flRate) const
     {
-        eax_validate_range<VocalMorpherCommitter::Exception>(
+        eax_validate_range<EaxVocalMorpherException>(
             "Rate",
             flRate,
             EAXVOCALMORPHER_MINRATE,
@@ -327,17 +337,11 @@ struct AllValidator {
 
 } // namespace
 
-template<> /* NOLINTNEXTLINE(clazy-copyable-polymorphic) Exceptions must be copyable. */
-struct VocalMorpherCommitter::Exception final : EaxException {
-    explicit Exception(const std::string_view message)
-        : EaxException{"EAX_VOCAL_MORPHER_EFFECT", message}
-    { }
-};
-
 template<> [[noreturn]]
-void VocalMorpherCommitter::fail(const std::string_view message)
-{ throw Exception{message}; }
+void EaxVocalMorpherCommitter::fail(std::string_view const message)
+{ throw EaxVocalMorpherException{message}; }
 
+template<>
 auto EaxVocalMorpherCommitter::commit(const EAXVOCALMORPHERPROPERTIES &props) const -> bool
 {
     if(auto *cur = std::get_if<EAXVOCALMORPHERPROPERTIES>(&mEaxProps); cur && *cur == props)
@@ -407,6 +411,7 @@ auto EaxVocalMorpherCommitter::commit(const EAXVOCALMORPHERPROPERTIES &props) co
     return true;
 }
 
+template<>
 void EaxVocalMorpherCommitter::SetDefaults(EaxEffectProps &props)
 {
     props = EAXVOCALMORPHERPROPERTIES{
@@ -418,6 +423,7 @@ void EaxVocalMorpherCommitter::SetDefaults(EaxEffectProps &props)
         .flRate = EAXVOCALMORPHER_DEFAULTRATE};
 }
 
+template<>
 void EaxVocalMorpherCommitter::Get(const EaxCall &call, const EAXVOCALMORPHERPROPERTIES &props)
 {
     switch(call.get_property_id())
@@ -434,6 +440,7 @@ void EaxVocalMorpherCommitter::Get(const EaxCall &call, const EAXVOCALMORPHERPRO
     }
 }
 
+template<>
 void EaxVocalMorpherCommitter::Set(const EaxCall &call, EAXVOCALMORPHERPROPERTIES &props)
 {
     switch(call.get_property_id())

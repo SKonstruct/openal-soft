@@ -116,22 +116,6 @@ auto lerpf(float const val1, float const val2, float const mu) noexcept -> float
 { return val1 + (val2-val1)*mu; }
 
 
-/** Find the next power-of-2 for non-power-of-2 numbers. */
-[[nodiscard]] constexpr
-auto NextPowerOf2(unsigned value) noexcept -> unsigned
-{
-    if(value > 0)
-    {
-        value--;
-        value |= value>>1;
-        value |= value>>2;
-        value |= value>>4;
-        value |= value>>8;
-        value |= value>>16;
-    }
-    return value+1;
-}
-
 /**
  * If the value is not already a multiple of r, round toward zero to the next
  * multiple.
@@ -239,6 +223,17 @@ auto float2uint(float const f) noexcept -> unsigned
     return (mant << shift) & mask;
 }
 
+
+namespace detail_ {
+
+/* Integral limit, where sub-integral precision is not available for floats. */
+inline constexpr auto ilim = std::array{
+    8388608.0f /*  0x1.0p+23 */,
+   -8388608.0f /* -0x1.0p+23 */
+};
+
+}
+
 /**
  * Rounds a float to the nearest integral value, according to the current
  * rounding mode. This is essentially an inlined version of rintf, although
@@ -262,15 +257,7 @@ auto fast_roundf(float f) noexcept -> float
 
 #else
 
-    /* Integral limit, where sub-integral precision is not available for
-     * floats.
-     */
-    static constexpr auto ilim = std::array{
-         8388608.0f /*  0x1.0p+23 */,
-        -8388608.0f /* -0x1.0p+23 */
-    };
     const auto conv_u = std::bit_cast<unsigned>(f);
-
     const auto sign = (conv_u>>31u)&0x01u;
     const auto expo = (conv_u>>23u)&0xffu;
 
@@ -292,10 +279,10 @@ auto fast_roundf(float f) noexcept -> float
      * may break without __builtin_assoc_barrier support).
      */
 #if HAS_BUILTIN(__builtin_assoc_barrier)
-    return __builtin_assoc_barrier(f + ilim[sign]) - ilim[sign];
+    return __builtin_assoc_barrier(f + detail_::ilim[sign]) - detail_::ilim[sign];
 #else
-    f += ilim[sign];
-    return f - ilim[sign];
+    f += detail_::ilim[sign];
+    return f - detail_::ilim[sign];
 #endif
 #endif
 }

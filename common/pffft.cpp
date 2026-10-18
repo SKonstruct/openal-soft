@@ -55,6 +55,8 @@
  * in order to take advantage of SIMD instructions of modern CPUs.
  */
 
+#include "config.h"
+
 #include "pffft.h"
 
 #include <algorithm>
@@ -70,14 +72,20 @@
 #include <utility>
 #include <vector>
 
-#include "almalloc.h"
+#include "opthelpers.h"
+#include "pragmadefs.h"
+#include "zudl.hpp"
+
+#if HAVE_CXXMODULES
+import fmtlib;
+import gsl;
+import types;
+#else
 #include "altypes.hpp"
 #include "fmt/format.h"
 #include "fmt/ranges.h"
 #include "gsl/gsl"
-#include "opthelpers.h"
-#include "pragmadefs.h"
-
+#endif
 
 namespace {
 
@@ -328,7 +336,7 @@ force_inline constexpr auto ld_ps1(float a) noexcept -> v4sf { return a; }
 [[maybe_unused, nodiscard]] inline
 auto valigned(const float *ptr) noexcept -> bool
 {
-    static constexpr auto alignmask = uintptr_t{SimdSize*sizeof(float) - 1};
+    constexpr auto alignmask = uintptr_t{SimdSize*sizeof(float) - 1};
     return (std::bit_cast<uintptr_t>(ptr) & alignmask) == 0;
 }
 #endif
@@ -812,9 +820,9 @@ void radf3_ps(const size_t ido, const size_t l1, const v4sf *RESTRICT cc, v4sf *
 void radb3_ps(const size_t ido, const size_t l1, const v4sf *RESTRICT cc, v4sf *RESTRICT ch,
     const float *const wa1)
 {
-    static constexpr auto taur = -0.5f;
-    static constexpr auto taui = 0.866025403784439f;
-    static constexpr auto taui_2 = taui*2.0f;
+    constexpr auto taur = -0.5f;
+    constexpr auto taui = 0.866025403784439f;
+    constexpr auto taui_2 = taui*2.0f;
 
     const auto vtaur = ld_ps1(taur);
     const auto vtaui_2 = ld_ps1(taui_2);
@@ -1789,7 +1797,7 @@ force_inline void pffft_real_finalize_4x4(const v4sf *in0, const v4sf *in1, cons
 NOINLINE void pffft_real_finalize(const size_t Ncvec, const v4sf *in, v4sf *RESTRICT out,
     const v4sf *e)
 {
-    static constexpr auto s = std::numbers::sqrt2_v<float>/2.0f;
+    constexpr auto s = std::numbers::sqrt2_v<float>/2.0f;
 
     Expects(in != out);
     const auto dk = size_t{Ncvec/SimdSize}; // number of 4x4 matrix blocks
@@ -1890,7 +1898,7 @@ force_inline void pffft_real_preprocess_4x4(const v4sf *in, const v4sf *e, v4sf 
 NOINLINE void pffft_real_preprocess(const size_t Ncvec, const v4sf *in, v4sf *RESTRICT out,
     const v4sf *e)
 {
-    static constexpr auto sqrt2 = std::numbers::sqrt2_v<float>;
+    constexpr auto sqrt2 = std::numbers::sqrt2_v<float>;
 
     Expects(in != out);
     const auto dk = size_t{Ncvec/SimdSize}; // number of 4x4 matrix blocks
@@ -2172,7 +2180,7 @@ void pffft_zconvolve_accumulate_internal(const PFFFT_Setup *s, const v4sf *RESTR
  * vectors, these casts are needed.
  */
 void pffft_zreorder(const PFFFT_Setup *setup, const float *in, float *out,
-    pffft_direction_t direction)
+    pffft_direction_t direction) noexcept NONBLOCKING
 {
     Expects(in != out);
     Expects(valigned(in) && valigned(out));
@@ -2181,7 +2189,7 @@ void pffft_zreorder(const PFFFT_Setup *setup, const float *in, float *out,
 }
 
 void pffft_zconvolve_scale_accumulate(const PFFFT_Setup *s, const float *a, const float *b,
-    float *ab, float scaling)
+    float *ab, float scaling) noexcept NONBLOCKING
 {
     Expects(valigned(a) && valigned(b) && valigned(ab));
     pffft_zconvolve_scale_accumulate_internal(s, reinterpret_cast<const v4sf*>(a),
@@ -2189,6 +2197,7 @@ void pffft_zconvolve_scale_accumulate(const PFFFT_Setup *s, const float *a, cons
 }
 
 void pffft_zconvolve_accumulate(const PFFFT_Setup *s, const float *a, const float *b, float *ab)
+    noexcept NONBLOCKING
 {
     Expects(valigned(a) && valigned(b) && valigned(ab));
     pffft_zconvolve_accumulate_internal(s, reinterpret_cast<const v4sf*>(a),
@@ -2196,7 +2205,7 @@ void pffft_zconvolve_accumulate(const PFFFT_Setup *s, const float *a, const floa
 }
 
 void pffft_transform(const PFFFT_Setup *setup, const float *input, float *output, float *work,
-    pffft_direction_t direction)
+    pffft_direction_t direction) noexcept NONBLOCKING
 {
     Expects(valigned(input) && valigned(output) && valigned(work));
     pffft_transform_internal(setup, reinterpret_cast<const v4sf*>(std::assume_aligned<16>(input)),
@@ -2205,7 +2214,7 @@ void pffft_transform(const PFFFT_Setup *setup, const float *input, float *output
 }
 
 void pffft_transform_ordered(const PFFFT_Setup *setup, const float *input, float *output,
-    float *work, pffft_direction_t direction)
+    float *work, pffft_direction_t direction) noexcept NONBLOCKING
 {
     Expects(valigned(input) && valigned(output) && valigned(work));
     pffft_transform_internal(setup, reinterpret_cast<const v4sf*>(std::assume_aligned<16>(input)),
@@ -2273,7 +2282,7 @@ void pffft_transform_internal(const PFFFT_Setup *setup, const float *input, floa
 } // namespace
 
 void pffft_zreorder(const PFFFT_Setup *setup, const float *in, float *RESTRICT out,
-    pffft_direction_t direction)
+    pffft_direction_t direction) noexcept NONBLOCKING
 {
     const auto N = size_t{setup->N};
     if(setup->transform == PFFFT_COMPLEX)
@@ -2300,7 +2309,7 @@ void pffft_zreorder(const PFFFT_Setup *setup, const float *in, float *RESTRICT o
 }
 
 void pffft_zconvolve_scale_accumulate(const PFFFT_Setup *s, const float *a, const float *b,
-    float *ab, float scaling)
+    float *ab, float scaling) noexcept NONBLOCKING
 {
     auto Ncvec = size_t{s->Ncvec};
 
@@ -2324,6 +2333,7 @@ void pffft_zconvolve_scale_accumulate(const PFFFT_Setup *s, const float *a, cons
 }
 
 void pffft_zconvolve_accumulate(const PFFFT_Setup *s, const float *a, const float *b, float *ab)
+    noexcept NONBLOCKING
 {
     auto Ncvec = size_t{s->Ncvec};
 
@@ -2348,13 +2358,13 @@ void pffft_zconvolve_accumulate(const PFFFT_Setup *s, const float *a, const floa
 
 
 void pffft_transform(const PFFFT_Setup *setup, const float *input, float *output, float *work,
-    pffft_direction_t direction)
+    pffft_direction_t direction) noexcept NONBLOCKING
 {
     pffft_transform_internal(setup, input, output, work, direction, false);
 }
 
 void pffft_transform_ordered(const PFFFT_Setup *setup, const float *input, float *output,
-    float *work, pffft_direction_t direction)
+    float *work, pffft_direction_t direction) noexcept NONBLOCKING
 {
     pffft_transform_internal(setup, input, output, work, direction, true);
 }

@@ -15,6 +15,7 @@
 #include "AL/al.h"
 #include "AL/alext.h"
 
+#include "filesystem.h"
 #include "fmt/base.h"
 #include "fmt/ostream.h"
 
@@ -193,43 +194,21 @@ enum class eLogLevel {
     Trace = 3,
 };
 inline auto LogLevel = eLogLevel::Error;
-inline auto LogFile = std::ofstream{}; /* NOLINT(cert-err58-cpp) */
+inline auto LogFile = fs::ofstream{}; /* NOLINT(cert-err58-cpp) */
+
+void al_print(eLogLevel level, fmt::string_view fmt, fmt::format_args&& args);
 
 template<typename ...Args>
-void TRACE(fmt::format_string<Args...> const fmt, Args&& ...args)
-{
-    if(LogLevel >= eLogLevel::Trace)
-    {
-        auto &file = LogFile ? LogFile : std::cerr;
-        auto msg = fmt::vformat(fmt, fmt::make_format_args(args...));
-        fmt::vprint(file, "AL Router (II): {}\n", fmt::make_format_args(msg));
-        file.flush();
-    }
-}
+void TRACE(fmt::format_string<Args...> fmt, Args&& ...args)
+{ al_print(eLogLevel::Trace, fmt.get(), fmt::make_format_args(args...)); }
 
 template<typename ...Args>
-void WARN(fmt::format_string<Args...> const fmt, Args&& ...args)
-{
-    if(LogLevel >= eLogLevel::Warn)
-    {
-        auto &file = LogFile ? LogFile : std::cerr;
-        auto msg = fmt::vformat(fmt, fmt::make_format_args(args...));
-        fmt::vprint(file, "AL Router (WW): {}\n", fmt::make_format_args(msg));
-        file.flush();
-    }
-}
+void WARN(fmt::format_string<Args...> fmt, Args&& ...args)
+{ al_print(eLogLevel::Warn, fmt.get(), fmt::make_format_args(args...)); }
 
 template<typename ...Args>
-void ERR(fmt::format_string<Args...> const fmt, Args&& ...args)
-{
-    if(LogLevel >= eLogLevel::Error)
-    {
-        auto &file = LogFile ? LogFile : std::cerr;
-        auto msg = fmt::vformat(fmt, fmt::make_format_args(args...));
-        fmt::vprint(file, "AL Router (EE): {}\n", fmt::make_format_args(msg));
-        file.flush();
-    }
-}
+void ERR(fmt::format_string<Args...> fmt, Args&& ...args)
+{ al_print(eLogLevel::Error, fmt.get(), fmt::make_format_args(args...)); }
 
 void LoadDriverList();
 

@@ -2,19 +2,13 @@
 #include "config.h"
 
 #include <cstdint>
-#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 
-#include "alformat.hpp"
 #include "alnumeric.h"
-#include "alstring.h"
-#include "filesystem.h"
-#include "fmt/std.h"
 #include "strutils.hpp"
 
 
@@ -25,9 +19,20 @@
 #endif
 
 #if HAVE_CXXMODULES
+import alstring;
+import filesystem;
+import fmtlib;
+import format;
 import logging;
+import zstring_view;
 #else
+#include "alformat.hpp"
+#include "alformatzsv.hpp"
+#include "alstring.h"
+#include "filesystem.h"
+#include "fmt/std.h"
 #include "logging.h"
+#include "zstring_view.hpp"
 #endif
 
 
@@ -39,7 +44,7 @@ LogLevel gLogLevel{LogLevel::Error};
 
 namespace {
 
-using namespace std::string_view_literals;
+using namespace al::zstring_view_literals;
 
 using lpvoid = void*;
 
@@ -52,7 +57,7 @@ enum class LogState : std::uint8_t {
 auto LogCallbackMutex = std::mutex{};
 auto gLogState = LogState::FirstRun;
 
-auto gLogFile = std::ofstream{}; /* NOLINT(cert-err58-cpp) */
+auto gLogFile = fs::ofstream{}; /* NOLINT(cert-err58-cpp) */
 
 
 auto gLogCallback = LogCallbackFunc{};
@@ -94,20 +99,20 @@ void al_set_log_callback(LogCallbackFunc const callback, void *const userptr)
     }
 }
 
-void al_print_impl(LogLevel const level, al::string_view const fmt, al::format_args&& args)
-{
+void al_print(LogLevel const level, al::string_view const fmt, al::format_args&& args) noexcept
+try {
     const auto msg = al::vformat(fmt, std::move(args));
 
-    auto const prefix = std::invoke([level]() -> std::string_view
+    auto const prefix = std::invoke([level]() -> al::zstring_view
     {
         switch(level)
         {
-        case LogLevel::Trace: return "[ALSOFT] (II) "sv;
-        case LogLevel::Warning: return "[ALSOFT] (WW) "sv;
-        case LogLevel::Error: return "[ALSOFT] (EE) "sv;
+        case LogLevel::Trace: return "[ALSOFT] (II) "_zsv;
+        case LogLevel::Warning: return "[ALSOFT] (WW) "_zsv;
+        case LogLevel::Error: return "[ALSOFT] (EE) "_zsv;
         case LogLevel::Disable: break;
         }
-        return "[ALSOFT] (--) "sv;
+        return "[ALSOFT] (--) "_zsv;
     });
 
     if(gLogLevel >= level)
@@ -138,8 +143,7 @@ void al_print_impl(LogLevel const level, al::string_view const fmt, al::format_a
         return ANDROID_LOG_ERROR;
     };
     /* NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) */
-    __android_log_print(android_severity(level), "openal", "%.*s%s",
-        al::saturate_cast<int>(prefix.size()), prefix.data(), msg.c_str());
+    __android_log_print(android_severity(level), "openal", "%s%s", prefix.c_str(), msg.c_str());
 #endif
 
     auto const cblock = std::lock_guard{LogCallbackMutex};
@@ -148,10 +152,13 @@ void al_print_impl(LogLevel const level, al::string_view const fmt, al::format_a
         if(auto const logcode = GetLevelCode(level))
         {
             if(gLogCallback)
-                gLogCallback(gLogCallbackPtr, *logcode, msg.data(),
+                gLogCallback(gLogCallbackPtr, *logcode, msg.c_str(),
                     al::saturate_cast<int>(msg.size()));
             else if(gLogState == LogState::FirstRun)
                 gLogState = LogState::Disable;
         }
     }
+}
+catch(...) {
+    /* Swallow all exceptions */
 }

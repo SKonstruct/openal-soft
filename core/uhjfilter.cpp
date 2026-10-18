@@ -14,6 +14,7 @@
 #include "allpass_conv.hpp"
 #include "gsl/gsl"
 #include "pffft.h"
+#include "zudl.hpp"
 
 #if HAVE_CXXMODULES
 import phase_shifter;
@@ -81,7 +82,7 @@ constexpr auto assume_aligned_span(const std::span<T,N> s) noexcept -> std::span
 
 template<std::size_t N>
 void UhjEncoder<N>::encode(const std::span<float> LeftOut, const std::span<float> RightOut,
-    const std::span<const std::span<const float>> InSamples)
+    const std::span<const std::span<const float>> InSamples) noexcept NONBLOCKING
 {
     static_assert(sFftLength == gSegmentedFilter<N>.sFftLength);
     static_assert(sSegmentSize == gSegmentedFilter<N>.sSampleLength);
@@ -229,7 +230,7 @@ void UhjEncoder<N>::encode(const std::span<float> LeftOut, const std::span<float
  * inputs.
  */
 void UhjEncoderIIR::encode(const std::span<float> LeftOut, const std::span<float> RightOut,
-    const std::span<const std::span<const float>> InSamples)
+    const std::span<const std::span<const float>> InSamples) noexcept NONBLOCKING
 {
     const auto samplesToDo = InSamples[0].size();
     const auto winput = assume_aligned_span<16>(InSamples[0]);
@@ -299,6 +300,7 @@ void UhjEncoderIIR::encode(const std::span<float> LeftOut, const std::span<float
  */
 template<std::size_t N>
 void UhjDecoder<N>::decode(const std::span<std::span<float>> samples, const bool updateState)
+    noexcept NONBLOCKING
 {
     static_assert(sInputPadding <= sMaxPadding, "Filter padding is too large");
 
@@ -360,6 +362,7 @@ void UhjDecoder<N>::decode(const std::span<std::span<float>> samples, const bool
 }
 
 void UhjDecoderIIR::decode(const std::span<std::span<float>> samples, const bool updateState)
+    noexcept NONBLOCKING
 {
     static_assert(sInputPadding <= sMaxPadding, "Filter padding is too large");
 
@@ -446,6 +449,7 @@ void UhjDecoderIIR::decode(const std::span<std::span<float>> samples, const bool
  */
 template<std::size_t N>
 void UhjStereoDecoder<N>::decode(const std::span<std::span<float>> samples, const bool updateState)
+    noexcept NONBLOCKING
 {
     static_assert(sInputPadding <= sMaxPadding, "Filter padding is too large");
 
@@ -523,6 +527,7 @@ void UhjStereoDecoder<N>::decode(const std::span<std::span<float>> samples, cons
 }
 
 void UhjStereoDecoderIIR::decode(const std::span<std::span<float>> samples, const bool updateState)
+    noexcept NONBLOCKING
 {
     static_assert(sInputPadding <= sMaxPadding, "Filter padding is too large");
 

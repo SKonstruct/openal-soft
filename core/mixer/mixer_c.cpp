@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <limits>
 #include <ranges>
@@ -12,12 +13,16 @@
 #include "core/bufferline.h"
 #include "core/cubic_defs.h"
 #include "core/mixer/hrtfdefs.h"
-#include "core/resampler_limits.h"
+#include "core/resampler_limits.hpp"
 #include "defs.h"
-#include "gsl/gsl"
 #include "hrtfbase.h"
 #include "opthelpers.h"
 
+#if HAVE_CXXMODULES
+import gsl;
+#else
+#include "gsl/gsl"
+#endif
 
 namespace {
 
@@ -63,7 +68,7 @@ auto do_cubic(CubicState const &istate, std::span<float const> const vals, std::
 auto do_fastbsinc(BsincState const &bsinc, std::span<float const> const vals,
     std::size_t const pos, unsigned const frac) noexcept NONBLOCKING -> float
 {
-    auto const m = std::size_t{bsinc.m.c_val};
+    auto const m = std::size_t{bsinc.m};
     ASSUME(m > 0);
     ASSUME(m <= MaxResamplerPadding);
 
@@ -84,7 +89,7 @@ auto do_fastbsinc(BsincState const &bsinc, std::span<float const> const vals,
 auto do_bsinc(BsincState const &bsinc, std::span<float const> const vals, std::size_t const pos,
     unsigned const frac) noexcept NONBLOCKING -> float
 {
-    auto const m = std::size_t{bsinc.m.c_val};
+    auto const m = std::size_t{bsinc.m};
     ASSUME(m > 0);
     ASSUME(m <= MaxResamplerPadding);
 
@@ -206,8 +211,8 @@ void Resample_FastBSinc_C(InterpState const *const state, std::span<float const>
     unsigned const frac, unsigned const increment, std::span<float> const dst) noexcept NONBLOCKING
 {
     auto const istate = *gsl::not_null{std::get_if<BsincState>(state)};
-    ASSUME(istate.l.c_val <= MaxResamplerEdge);
-    DoResample<BsincState,do_fastbsinc>(istate, src.subspan(MaxResamplerEdge-istate.l.c_val), frac,
+    ASSUME(istate.l <= MaxResamplerEdge);
+    DoResample<BsincState,do_fastbsinc>(istate, src.subspan(MaxResamplerEdge-istate.l), frac,
         increment, dst);
 }
 
@@ -215,8 +220,8 @@ void Resample_BSinc_C(InterpState const *const state, std::span<float const> con
     unsigned const frac, unsigned const increment, std::span<float> const dst) noexcept NONBLOCKING
 {
     auto const istate = *gsl::not_null{std::get_if<BsincState>(state)};
-    ASSUME(istate.l.c_val <= MaxResamplerEdge);
-    DoResample<BsincState,do_bsinc>(istate, src.subspan(MaxResamplerEdge-istate.l.c_val), frac,
+    ASSUME(istate.l <= MaxResamplerEdge);
+    DoResample<BsincState,do_bsinc>(istate, src.subspan(MaxResamplerEdge-istate.l), frac,
         increment, dst);
 }
 

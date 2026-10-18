@@ -22,10 +22,12 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
-#include <cstdlib>
+#include <cstdint>
 #include <limits>
 #include <numbers>
+#include <optional>
 #include <ranges>
 #include <span>
 #include <variant>
@@ -35,16 +37,25 @@
 #include "alnumeric.h"
 #include "core/ambidefs.h"
 #include "core/bufferline.h"
-#include "core/context.h"
-#include "core/cubic_tables.h"
-#include "core/device.h"
 #include "core/effects/base.h"
 #include "core/effectslot.h"
+#include "core/filters/splitter.h"
 #include "core/mixer.h"
 #include "core/mixer/defs.h"
-#include "core/resampler_limits.h"
+#include "core/resampler_limits.hpp"
 #include "intrusive_ptr.h"
 #include "opthelpers.h"
+#include "zudl.hpp"
+
+#if HAVE_CXXMODULES
+import core.context;
+import core.device;
+import cubic_tables;
+#else
+#include "core/context.h"
+#include "core/cubic_tables.hpp"
+#include "core/device.h"
+#endif
 
 struct BufferStorage;
 
@@ -76,7 +87,7 @@ alignas(16) constexpr std::array<std::array<float, NumLines>, NumLines> A2B{{
 }};
 
 
-struct ChorusState final : public EffectState {
+struct ChorusState final : EffectState {
     std::vector<float> mDelayBuffers;
     unsigned mOffset{0};
 
@@ -101,7 +112,7 @@ struct ChorusState final : public EffectState {
 
 
     struct OutParams {
-        unsigned mTargetChannel{InvalidChannelIndex.c_val};
+        unsigned mTargetChannel{InvalidChannelIndex};
 
         /* Current and target gain for this channel. */
         float mCurrentGain{};
@@ -125,11 +136,11 @@ struct ChorusState final : public EffectState {
     void calcTriangleDelays(const size_t todo);
     void calcSinusoidDelays(const size_t todo);
 
-    void deviceUpdate(const DeviceBase *device, const BufferStorage*) final;
+    void deviceUpdate(const DeviceBase *device, const BufferStorage*) override;
     void update(const ContextBase *context, const EffectSlotBase *slot, const EffectProps *props_,
-        const EffectTarget target) final;
-    void process(const size_t samplesToDo, const std::span<const FloatBufferLine> samplesIn,
-        const std::span<FloatBufferLine> samplesOut) final;
+        EffectTarget target) noexcept NONBLOCKING override;
+    void process(size_t samplesToDo, std::span<const FloatBufferLine> samplesIn,
+        std::span<FloatBufferLine> samplesOut) noexcept override;
 };
 
 
@@ -138,7 +149,7 @@ void ChorusState::deviceUpdate(const DeviceBase *device, const BufferStorage*)
     static constexpr auto MaxDelay = std::max(ChorusMaxDelay, FlangerMaxDelay);
     const auto frequency = static_cast<float>(device->mSampleRate);
 
-    const auto maxlen = std::size_t{NextPowerOf2(float2uint(MaxDelay*2.0f*frequency) + 1u)}
+    const auto maxlen = std::size_t{std::bit_ceil(float2uint(MaxDelay*2.0f*frequency) + 1u)}
         * NumLines;
     if(maxlen != mDelayBuffers.size())
         decltype(mDelayBuffers)(maxlen).swap(mDelayBuffers);
@@ -169,16 +180,16 @@ void ChorusState::deviceUpdate(const DeviceBase *device, const BufferStorage*)
 }
 
 void ChorusState::update(const ContextBase *context, const EffectSlotBase *slot,
-    const EffectProps *props_, const EffectTarget target)
+    const EffectProps *props_, const EffectTarget target) noexcept NONBLOCKING
 {
-    static constexpr auto mindelay = int{MaxResamplerEdge << gCubicTable.sTableBits};
-    auto &props = std::get<ChorusProps>(*props_);
+    constexpr auto mindelay = int{MaxResamplerEdge << gCubicTable.sTableBits};
+    auto &props = IGNORE_FUNCTION_EFFECTS(std::get<ChorusProps>(*props_));
 
     /* The LFO depth is scaled to be relative to the sample delay. Clamp the
      * delay and depth to allow enough padding for resampling.
      */
-    auto const device = al::get_not_null(context->mDevice);
-    auto const frequency = static_cast<float>(device->mSampleRate);
+    auto const &device = context->mDevice;
+    auto const frequency = static_cast<float>(device.mSampleRate);
 
     mWaveform = props.Waveform;
 
@@ -201,7 +212,7 @@ void ChorusState::update(const ContextBase *context, const EffectSlotBase *slot,
         /* Calculate LFO coefficient (number of samples per cycle). Limit the
          * max range to avoid overflow when calculating the displacement.
          */
-        static constexpr auto range_limit = std::numeric_limits<int>::max()/360 - 180;
+        constexpr auto range_limit = std::numeric_limits<int>::max()/360 - 180;
         const auto range = std::round(frequency / props.Rate);
         const auto lfo_range = float2uint(std::min(range, float{range_limit}));
 
@@ -225,18 +236,18 @@ void ChorusState::update(const ContextBase *context, const EffectSlotBase *slot,
 
     mOutTarget = target.Main->Buffer;
     target.Main->setAmbiMixParams(slot->Wet, slot->Gain,
-        [this](std::size_t const idx, u8 const outchan, float const outgain)
+        [this](std::size_t const idx, std::uint8_t const outchan, float const outgain)
     {
         if(idx < mChans.size())
         {
-            mChans[idx].mTargetChannel = outchan.c_val;
+            mChans[idx].mTargetChannel = outchan;
             mChans[idx].mTargetGain = outgain;
         }
     });
 
     if(mUpsampler.has_value())
     {
-        auto &upsampler = mUpsampler.value();
+        auto &upsampler = *mUpsampler;
         const auto upmatrix = std::span{AmbiScale::FirstOrderUp};
 
         auto const outgain = slot->Gain;
@@ -325,6 +336,7 @@ void ChorusState::calcSinusoidDelays(const size_t todo)
 
 void ChorusState::process(const size_t samplesToDo,
     const std::span<const FloatBufferLine> samplesIn, const std::span<FloatBufferLine> samplesOut)
+    noexcept NONBLOCKING
 {
     /* Convert B-Format to A-Format for processing. */
     const auto numInput = std::min(samplesIn.size(), NumLines);
@@ -395,7 +407,7 @@ void ChorusState::process(const size_t samplesToDo,
 
     if(mUpsampler.has_value())
     {
-        auto &upsampler = mUpsampler.value();
+        auto &upsampler = *mUpsampler;
         auto chandata = mChans.begin();
         for(const auto c : std::views::iota(0_uz, NumLines))
         {

@@ -23,7 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdlib>
+#include <cstdint>
 #include <functional>
 #include <numbers>
 #include <ranges>
@@ -33,15 +33,23 @@
 #include "alc/effects/base.h"
 #include "core/ambidefs.h"
 #include "core/bufferline.h"
-#include "core/context.h"
-#include "core/device.h"
 #include "core/effects/base.h"
 #include "core/effectslot.h"
 #include "core/filters/biquad.h"
 #include "core/mixer.h"
-#include "gsl/gsl"
 #include "intrusive_ptr.h"
 #include "opthelpers.h"
+#include "zudl.hpp"
+
+#if HAVE_CXXMODULES
+import core.context;
+import core.device;
+import gsl;
+#else
+#include "core/context.h"
+#include "core/device.h"
+#include "gsl/gsl"
+#endif
 
 struct BufferStorage;
 
@@ -69,7 +77,7 @@ struct OneFunc {
 };
 
 
-struct ModulatorState final : public EffectState {
+struct ModulatorState final : EffectState {
     std::variant<OneFunc,SinFunc,SawFunc,SquareFunc> mSampleGen;
 
     unsigned mIndex{0};
@@ -80,7 +88,7 @@ struct ModulatorState final : public EffectState {
     alignas(16) FloatBufferLine mBuffer{};
 
     struct OutParams {
-        unsigned mTargetChannel{InvalidChannelIndex.c_val};
+        unsigned mTargetChannel{InvalidChannelIndex};
 
         BiquadFilter mFilter;
 
@@ -92,9 +100,9 @@ struct ModulatorState final : public EffectState {
 
     void deviceUpdate(const DeviceBase *device, const BufferStorage *buffer) override;
     void update(const ContextBase *context, const EffectSlotBase *slot, const EffectProps *props,
-        const EffectTarget target) override;
-    void process(const size_t samplesToDo, const std::span<const FloatBufferLine> samplesIn,
-        const std::span<FloatBufferLine> samplesOut) override;
+        EffectTarget target) noexcept NONBLOCKING override;
+    void process(size_t samplesToDo, std::span<const FloatBufferLine> samplesIn,
+        std::span<FloatBufferLine> samplesOut) noexcept override;
 };
 
 void ModulatorState::deviceUpdate(const DeviceBase*, const BufferStorage*)
@@ -103,11 +111,11 @@ void ModulatorState::deviceUpdate(const DeviceBase*, const BufferStorage*)
 }
 
 void ModulatorState::update(const ContextBase *context, const EffectSlotBase *slot,
-    const EffectProps *props_, const EffectTarget target)
+    const EffectProps *props_, const EffectTarget target) noexcept NONBLOCKING
 {
-    auto &props = std::get<ModulatorProps>(*props_);
-    auto const device = al::get_not_null(context->mDevice);
-    auto const samplerate = static_cast<float>(device->mSampleRate);
+    auto &props = IGNORE_FUNCTION_EFFECTS(std::get<ModulatorProps>(*props_));
+    auto const &device = context->mDevice;
+    auto const samplerate = static_cast<float>(device.mSampleRate);
 
     /* The effective frequency will be adjusted to have a whole number of
      * samples per cycle (at 48khz, that allows 8000, 6857.14, 6000, 5333.33,
@@ -118,8 +126,8 @@ void ModulatorState::update(const ContextBase *context, const EffectSlotBase *sl
      */
     const auto samplesPerCycle = props.Frequency > 0.0f
         ? samplerate/props.Frequency + 0.5f : 1.0f;
-    const auto range = static_cast<unsigned>(std::clamp(samplesPerCycle, 1.0f, samplerate));
-    mIndex = static_cast<unsigned>((u64{mIndex} * u64{range} / u64{mRange}).c_val);
+    const auto range = gsl::narrow_cast<unsigned>(std::clamp(samplesPerCycle, 1.0f, samplerate));
+    mIndex = gsl::narrow_cast<unsigned>(std::uint64_t{mIndex} * range / mRange);
     mRange = range;
 
     if(mRange == 1)
@@ -157,19 +165,20 @@ void ModulatorState::update(const ContextBase *context, const EffectSlotBase *sl
 
     mOutTarget = target.Main->Buffer;
     target.Main->setAmbiMixParams(slot->Wet, slot->Gain,
-        [this](std::size_t const idx, u8 const outchan, float const outgain)
+        [this](std::size_t const idx, std::uint8_t const outchan, float const outgain)
     {
-        mChans[idx].mTargetChannel = outchan.c_val;
+        mChans[idx].mTargetChannel = outchan;
         mChans[idx].mTargetGain = outgain;
     });
 }
 
 void ModulatorState::process(const size_t samplesToDo,
     const std::span<const FloatBufferLine> samplesIn, const std::span<FloatBufferLine> samplesOut)
+    noexcept NONBLOCKING
 {
     ASSUME(samplesToDo > 0);
 
-    std::visit([this,samplesToDo]<typename T>(T&& type [[maybe_unused]])
+    IGNORE_FUNCTION_EFFECTS(std::visit([this,samplesToDo]<typename T>(T&& type [[maybe_unused]])
     {
         using Modulator = std::remove_cvref_t<T>;
         const auto range = mRange;
@@ -191,7 +200,7 @@ void ModulatorState::process(const size_t samplesToDo,
                 index = 0;
         }
         mIndex = index;
-    }, mSampleGen);
+    }, mSampleGen));
 
     auto chandata = mChans.begin();
     std::ranges::for_each(samplesIn, [&,this](const FloatConstBufferSpan input)

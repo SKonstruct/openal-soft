@@ -63,20 +63,23 @@ int my_main(int, char**);
 #define main my_main
 
 #ifdef __cplusplus
-#include <iostream>
+#include <algorithm>
+#include <cstdlib>
 #include <stdexcept>
 #include <span>
 #include <string>
-#include <string_view>
 
-#include "altypes.hpp"
-#include "fmt/base.h"
-#include "fmt/ostream.h"
+#include "zudl.hpp"
 
 #if HAVE_CXXMODULES
+import fmtlib;
 import gsl;
+import zstring_view;
 #else
+#include "fmt/base.h"
+#include "fmt/ostream.h"
 #include "gsl/gsl"
+#include "zstring_view.hpp"
 #endif
 
 extern "C"
@@ -86,7 +89,7 @@ auto wmain(int argc, wchar_t **wargv) -> int
     const auto wargs = std::span{wargv, gsl::narrow<size_t>(argc)};
     auto argstr = std::string{};
     try {
-        for(std::wstring_view arg : wargs)
+        for(al::wzstring_view const arg : wargs)
         {
             if(arg.empty())
             {
@@ -109,7 +112,7 @@ auto wmain(int argc, wchar_t **wargv) -> int
         }
     }
     catch(std::exception& e) {
-        fmt::println(std::cerr, "Failed to convert command line to UTF-8: {}", e.what());
+        fmt::println(stderr, "Failed to convert command line to UTF-8: {}", e.what());
         return -1;
     }
 

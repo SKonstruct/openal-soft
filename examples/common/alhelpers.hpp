@@ -1,30 +1,19 @@
 #ifndef ALHELPERS_HPP
 #define ALHELPERS_HPP
 
-#include "config.h"
-
 #include <iostream>
 #include <span>
 #include <stdexcept>
-#include <string>
-#include <string_view>
 #include <utility>
-
-#include "fmt/base.h"
-#include "fmt/ostream.h"
-
-#if HAVE_CXXMODULES
-import gsl;
-import openal.alc;
-import openal.ext;
-
-#else
 
 #include "AL/alc.h"
 #include "AL/alext.h"
 
+#include "alformatzsv.hpp"
+#include "fmt/base.h"
+#include "fmt/ostream.h"
 #include "gsl/gsl"
-#endif
+
 
 extern "C" {
 
@@ -99,11 +88,14 @@ extern LPALBUFFERCALLBACKSOFT palBufferCallbackSOFT;
 /* Load AL extension functions for the current context. */
 void LoadALExtensions();
 
+/* Get the name from a format enum. */
+auto FormatName(ALenum format) -> const char*;
+
 } /* extern "C" */
 
 
 [[nodiscard]]
-inline auto InitAL(std::span<std::string_view> &args, const ALCint *attribs=nullptr)
+inline auto InitAL(std::span<al::zstring_view> &args, const ALCint *attribs=nullptr)
 {
     struct Handle {
         ALCdevice *mDevice{};
@@ -150,7 +142,7 @@ inline auto InitAL(std::span<std::string_view> &args, const ALCint *attribs=null
     /* Open and initialize a device */
     if(args.size() > 1 && args[0] == "-device")
     {
-        hdl.mDevice = alcOpenDevice(std::string{args[1]}.c_str());
+        hdl.mDevice = alcOpenDevice(args[1].c_str());
         if(!hdl.mDevice)
             fmt::println(std::cerr, "Failed to open \"{}\", trying default", args[1]);
         args = args.subspan(2);

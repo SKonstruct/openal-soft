@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -27,17 +28,14 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
-#include "almalloc.h"
 #include "alnumeric.h"
-#include "alstring.h"
-#include "altypes.hpp"
-#include "common/alhelpers.hpp"
-#include "fmt/base.h"
-#include "fmt/ostream.h"
+#include "inout_ptr.hpp"
 #include "opthelpers.h"
 #include "pragmadefs.h"
+#include "zudl.hpp"
 
 DIAGNOSTIC_PUSH
 std_pragma("GCC diagnostic ignored \"-Wconversion\"")
@@ -68,8 +66,12 @@ struct SwsContext;
 #include "SDL3/SDL_video.h"
 
 #if HAVE_CXXMODULES
+import alhelpers;
+import alstring;
+import fmtlib;
 import gsl;
 import openal;
+import zstring_view;
 
 /* AL_APIENTRY is needed, but not exported from the module. */
 #ifdef _WIN32
@@ -84,6 +86,11 @@ import openal;
 #include "AL/alc.h"
 #include "AL/alext.h"
 
+#include "alformatzsv.hpp"
+#include "alstring.h"
+#include "common/alhelpers.hpp"
+#include "fmt/base.h"
+#include "fmt/ostream.h"
 #include "gsl/gsl"
 #endif
 
@@ -108,11 +115,11 @@ namespace {
 
 using voidp = void*;
 using fixed32 = std::chrono::duration<int64_t, std::ratio<1, (int64_t{1}<<32)>>;
-using nanoseconds = std::chrono::nanoseconds;
-using microseconds = std::chrono::microseconds;
-using milliseconds = std::chrono::milliseconds;
-using seconds = std::chrono::seconds;
 using seconds_d64 = std::chrono::duration<double>;
+using std::chrono::nanoseconds;
+using std::chrono::microseconds;
+using std::chrono::milliseconds;
+using std::chrono::seconds;
 using std::chrono::duration_cast;
 
 
@@ -412,8 +419,8 @@ struct AudioState {
     int mSamplesMax{0};
 
     std::vector<uint8_t> mBufferData;
-    std::atomic<size_t> mReadPos{0};
-    std::atomic<size_t> mWritePos{0};
+    std::atomic<size_t> mReadCount{0};
+    std::atomic<size_t> mWriteCount{0};
 
     /* OpenAL format */
     ALenum mFormat{AL_NONE};
@@ -534,7 +541,8 @@ struct MovieState {
 
     std::string mFilename;
 
-    explicit MovieState(std::string_view fname) : mAudio{*this}, mVideo{*this}, mFilename{fname}
+    explicit
+    MovieState(std::string_view const fname) : mAudio{*this}, mVideo{*this}, mFilename{fname}
     { }
     ~MovieState()
     {
@@ -616,12 +624,11 @@ auto AudioState::getClockNoLock() const -> nanoseconds
              * is the pts of the next sample to be buffered, minus the amount
              * already in the buffer ready to play.
              */
-            const auto woffset = mWritePos.load(std::memory_order_acquire);
-            const auto roffset = mReadPos.load(std::memory_order_relaxed);
-            /* Account for the write offset wrapping behind the read offset. */
-            const auto readable = (woffset < roffset)*mBufferData.size() + woffset - roffset;
+            auto const roffset = mReadCount.load(std::memory_order_acquire);
+            auto const woffset = mWriteCount.load(std::memory_order_acquire);
+            auto const readable = (woffset-roffset) / mFrameSize;
 
-            pts = mCurrentPts - nanoseconds{seconds{readable/mFrameSize}}/mCodecCtx->sample_rate;
+            pts = mCurrentPts - nanoseconds{seconds{readable}}/mCodecCtx->sample_rate;
         }
 
         return pts;
@@ -681,14 +688,12 @@ auto AudioState::startPlayback() -> bool
 {
     if(!mBufferData.empty())
     {
-        const auto woffset = mWritePos.load(std::memory_order_acquire);
-        const auto roffset = mReadPos.load(std::memory_order_relaxed);
-        /* Account for the write offset wrapping behind the read offset. */
-        const auto readable = (woffset < roffset)*mBufferData.size() + woffset - roffset;
+        auto const roffset = mReadCount.load(std::memory_order_acquire);
+        auto const woffset = mWriteCount.load(std::memory_order_relaxed);
+        auto const readable = (woffset-roffset) / mFrameSize;
         if(readable == 0) return false;
 
-        const auto nanosamples = nanoseconds{seconds{readable / mFrameSize}};
-        mStartPts = mCurrentPts - nanosamples/mCodecCtx->sample_rate;
+        mStartPts = mCurrentPts - nanoseconds{seconds{readable}}/mCodecCtx->sample_rate;
     }
     else
     {
@@ -781,7 +786,7 @@ void sample_dup(std::span<uint8_t> out, std::span<const uint8_t> in, size_t coun
 
 auto AudioState::readAudio(std::span<uint8_t> samples, int &sample_skip) -> bool
 {
-    auto audio_size = 0u;
+    auto audio_size = 0_uz;
 
     /* Read the next chunk of data, refill the buffer, and queue it
      * on the source.
@@ -844,39 +849,40 @@ auto AudioState::readAudio(std::span<uint8_t> samples, int &sample_skip) -> bool
 
 auto AudioState::readAudio(int sample_skip) -> void
 {
-    auto woffset = mWritePos.load(std::memory_order_acquire);
-    const auto roffset = mReadPos.load(std::memory_order_relaxed);
+    auto const buffermask = mBufferData.size() - 1;
+    auto const roffset = mReadCount.load(std::memory_order_acquire);
+    auto woffset = mWriteCount.load(std::memory_order_relaxed);
     while(mSamplesLen > 0)
     {
-        const auto nsamples = ((roffset > woffset) ? roffset-woffset-1
-            : (roffset == 0) ? (mBufferData.size()-woffset-1)
-            : (mBufferData.size()-woffset)) / mFrameSize;
+        const auto nsamples = (mBufferData.size() - (woffset-roffset)) / mFrameSize;
         if(!nsamples) break;
 
         if(mSamplesPos < 0)
         {
-            const auto rem = std::min<size_t>(nsamples, gsl::narrow_cast<ALuint>(-mSamplesPos));
+            const auto rem = std::min<size_t>(gsl::narrow_cast<ALuint>(-mSamplesPos),
+                std::min(nsamples, (mBufferData.size() - (woffset&buffermask))/mFrameSize));
 
-            sample_dup(mBufferData|std::views::drop(woffset), mSamplesSpan.first(mFrameSize), rem);
+            sample_dup(std::span{mBufferData}.subspan(woffset&buffermask),
+                mSamplesSpan.first(mFrameSize), rem);
             woffset += rem * mFrameSize;
-            if(woffset == mBufferData.size()) woffset = 0;
-            mWritePos.store(woffset, std::memory_order_release);
+            mWriteCount.store(woffset, std::memory_order_release);
 
             mCurrentPts += nanoseconds{seconds{rem}} / mCodecCtx->sample_rate;
             mSamplesPos += gsl::narrow_cast<int>(rem);
             continue;
         }
 
-        if(const auto rem = std::min(nsamples, gsl::narrow_cast<size_t>(mSamplesLen-mSamplesPos)))
+        const auto rem = std::min<size_t>(gsl::narrow_cast<ALuint>(mSamplesLen-mSamplesPos),
+            std::min(nsamples, (mBufferData.size() - (woffset&buffermask))/mFrameSize));
+        if(rem > 0)
         {
-            const auto boffset = gsl::narrow_cast<ALuint>(mSamplesPos) * size_t{mFrameSize};
+            const auto boffset = gsl::narrow_cast<ALuint>(mSamplesPos) * std::size_t{mFrameSize};
             const auto nbytes = rem * mFrameSize;
 
             std::ranges::copy(mSamplesSpan | std::views::drop(boffset) | std::views::take(nbytes),
-                (mBufferData | std::views::drop(woffset)).begin());
+                std::span{mBufferData}.subspan(woffset&buffermask).begin());
             woffset += nbytes;
-            if(woffset == mBufferData.size()) woffset = 0;
-            mWritePos.store(woffset, std::memory_order_release);
+            mWriteCount.store(woffset, std::memory_order_release);
 
             mCurrentPts += nanoseconds{seconds{rem}} / mCodecCtx->sample_rate;
             mSamplesPos += gsl::narrow_cast<int>(rem);
@@ -937,27 +943,23 @@ auto AL_APIENTRY AudioState::eventCallback(ALenum eventType, ALuint object, ALui
 
 auto AudioState::bufferCallback(const std::span<ALubyte> data) noexcept -> ALsizei
 {
-    auto output = data.begin();
+    auto const buffermask = mBufferData.size() - 1;
+    auto const r = mReadCount.load(std::memory_order_relaxed);
+    auto const w = mWriteCount.load(std::memory_order_acquire);
+    auto const readable = w - r;
 
-    auto roffset = mReadPos.load(std::memory_order_acquire);
-    while(const auto rem = gsl::narrow_cast<size_t>(std::distance(output, data.end())))
-    {
-        const auto woffset = mWritePos.load(std::memory_order_relaxed);
-        if(woffset == roffset) break;
+    auto const to_read = std::min(data.size(), readable);
+    auto const read_idx = r & buffermask;
 
-        auto todo = ((woffset < roffset) ? mBufferData.size() : woffset) - roffset;
-        todo = std::min(todo, rem);
+    auto const rdend = read_idx + to_read;
+    auto const [n1, n2] = (rdend <= mBufferData.size()) ? std::array{to_read, 0_uz}
+        : std::array{mBufferData.size() - read_idx, rdend&buffermask};
 
-        output = std::ranges::copy(mBufferData | std::views::drop(roffset)
-            | std::views::take(todo), output).out;
-
-        roffset += todo;
-        if(roffset == mBufferData.size())
-            roffset = 0;
-    }
-    mReadPos.store(roffset, std::memory_order_release);
-
-    return gsl::narrow_cast<ALsizei>(std::distance(data.begin(), output));
+    auto const outiter = std::ranges::copy(mBufferData | std::views::drop(read_idx)
+        | std::views::take(n1), data.begin()).out;
+    std::ranges::copy(mBufferData | std::views::take(n2), outiter);
+    mReadCount.store(r+n1+n2, std::memory_order_release);
+    return al::saturate_cast<ALsizei>(to_read);
 }
 
 void AudioState::handler()
@@ -1375,11 +1377,11 @@ void AudioState::handler()
         {
             const auto numsamples = duration_cast<seconds>(mCodecCtx->sample_rate
                 * AudioBufferTotalTime).count();
-            mBufferData.resize(gsl::narrow_cast<size_t>(numsamples) * mFrameSize);
+            mBufferData.resize(std::bit_ceil(gsl::narrow<size_t>(numsamples) * mFrameSize));
             std::ranges::fill(mBufferData, uint8_t{});
 
-            mReadPos.store(0, std::memory_order_relaxed);
-            mWritePos.store(0, std::memory_order_relaxed);
+            mReadCount.store(0, std::memory_order_relaxed);
+            mWriteCount.store(0, std::memory_order_relaxed);
 
             auto refresh = ALCint{};
             alcGetIntegerv(alcGetContextsDevice(alcGetCurrentContext()), ALC_REFRESH, 1, &refresh);
@@ -1776,7 +1778,11 @@ void VideoState::updateVideo(SDL_Window *screen, SDL_Renderer *renderer, bool re
                     frame_height = gsl::narrow_cast<int>(std::lround(frame_height / aspect_ratio));
             }
             if(SDL_SetWindowSize(screen, frame_width, frame_height))
+            {
                 SDL_SyncWindow(screen);
+                if(SDL_SetWindowPosition(screen, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED))
+                    SDL_SyncWindow(screen);
+            }
             SDL_SetRenderLogicalPresentation(renderer, frame_width, frame_height,
                 SDL_LOGICAL_PRESENTATION_LETTERBOX);
         }
@@ -2121,8 +2127,8 @@ void MovieState::stop()
 // Helper method to print the time with human-readable formatting.
 auto PrettyTime(seconds t) -> std::string
 {
-    using minutes = std::chrono::minutes;
-    using hours = std::chrono::hours;
+    using std::chrono::minutes;
+    using std::chrono::hours;
 
     if(t.count() < 0)
         return "0s";
@@ -2136,11 +2142,11 @@ auto PrettyTime(seconds t) -> std::string
 
 
 struct Application {
-    std::span<std::string_view> mArgs;
+    std::span<al::zstring_view> mArgs{};
 
-    using ALMgrHandle = std::invoke_result_t<decltype(InitAL), std::span<std::string_view>&,
+    using ALMgrHandle = std::invoke_result_t<decltype(InitAL), std::span<al::zstring_view>&,
         ALCint const*>;
-    std::optional<ALMgrHandle> mALManager;
+    std::optional<ALMgrHandle> mALManager{};
 
     SDL_Window *mWindow{};
     SDL_Renderer *mRenderer{};
@@ -2150,11 +2156,11 @@ struct Application {
     };
     EomAction mEomAction{EomAction::Next};
 
-    std::chrono::seconds mLastTime{std::chrono::seconds::min()};
+    seconds mLastTime{seconds::min()};
 
-    std::unique_ptr<MovieState> mMovieState;
+    std::unique_ptr<MovieState> mMovieState{};
 
-    explicit Application(std::span<std::string_view> const args) noexcept : mArgs{args} { }
+    explicit Application(std::span<al::zstring_view> const args) noexcept : mArgs{args} { }
     ~Application()
     {
         mMovieState = nullptr;
@@ -2190,6 +2196,7 @@ struct Application {
             fmt::println(std::cerr, "SDL: could not set video mode - exiting");
             return false;
         }
+        SDL_SetWindowPosition(mWindow, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         SDL_SetWindowSurfaceVSync(mWindow, 1);
 
         /* Make a renderer to handle the texture image surface and rendering. */
@@ -2211,7 +2218,7 @@ struct Application {
     }
 };
 
-auto main(std::span<std::string_view> args) -> int
+auto main(std::span<al::zstring_view> args) -> int
 {
     SDL_SetMainReady();
 
@@ -2323,11 +2330,11 @@ auto main(std::span<std::string_view> args) -> int
                     }
                     return std::numeric_limits<float>::quiet_NaN();
                 });
-                if(optarg.starts_with("+") || optarg.starts_with("-")
-                    || al::case_compare(optarg.substr(endpos), "db") == 0)
+                if(optarg.starts_with('+') || optarg.starts_with('-')
+                    || is_eq(al::case_compare(optarg.substr(endpos), "db")))
                 {
                     if(!std::isfinite(gainval) || (endpos != optarg.size()
-                            && al::case_compare(optarg.substr(endpos), "db") != 0))
+                            && is_neq(al::case_compare(optarg.substr(endpos), "db"))))
                         fmt::println(std::cerr, "Invalid dB gain value: {}", optarg);
                     else
                         PlaybackGain = std::pow(10.0f, gainval/20.0f);
@@ -2371,7 +2378,7 @@ auto main(std::span<std::string_view> args) -> int
         if(argval == "-tune")
         {
             if(curarg+1 == args_end)
-                fmt::println(std::cerr, "Missing argument for -tstretch");
+                fmt::println(std::cerr, "Missing argument for -tune");
             else
             {
                 const auto optarg = *++curarg;
@@ -2381,7 +2388,7 @@ auto main(std::span<std::string_view> args) -> int
                 {
                     try { return std::stof(std::string{optarg}, &endpos); }
                     catch(std::exception &e) {
-                        fmt::println(std::cerr, "Exception reading tstretch value: {}", e.what());
+                        fmt::println(std::cerr, "Exception reading tune value: {}", e.what());
                     }
                     return std::numeric_limits<float>::quiet_NaN();
                 });
@@ -2566,7 +2573,7 @@ auto main(std::span<std::string_view> args) -> int
 
 auto main(int argc, char *argv[]) -> int
 {
-    auto args = std::vector<std::string_view>(gsl::narrow<unsigned int>(argc));
+    auto args = std::vector<al::zstring_view>(gsl::narrow<unsigned>(argc));
     std::ranges::copy(std::views::counted(argv, argc), args.begin());
     return main(std::span{args});
 }

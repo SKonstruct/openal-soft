@@ -1,7 +1,7 @@
 #ifndef BACKENDS_SNDIO_HPP
 #define BACKENDS_SNDIO_HPP
 
-#include "base.h"
+#include "base.hpp"
 
 struct SndIOBackendFactory final : BackendFactory {
     auto init() -> bool final;
@@ -10,7 +10,7 @@ struct SndIOBackendFactory final : BackendFactory {
 
     auto enumerate(BackendType type) -> std::vector<std::string> final;
 
-    auto createBackend(gsl::not_null<DeviceBase*> device, BackendType type) -> BackendPtr final;
+    auto createBackend(DeviceBase &device, BackendType type) -> BackendPtr final;
 
     static auto getFactory() -> BackendFactory&;
 };
