@@ -31,7 +31,6 @@
 #include <chrono>
 #include <cstddef>
 #include <functional>
-#include <iostream>
 #include <memory>
 #include <ranges>
 #include <span>
@@ -42,19 +41,22 @@
 
 #include "sndfile.h"
 
-#include "alnumeric.h"
 #include "zudl.hpp"
 
 #include "win_main_utf8.h"
 
 #if HAVE_CXXMODULES
 import alhelpers;
+import common.std;
 import fmtlib;
 import gsl;
+import numeric;
 import openal;
 import zstring_view;
 
 #else
+
+#include <iostream>
 
 #include "AL/al.h"
 #include "AL/alc.h"
@@ -65,6 +67,7 @@ import zstring_view;
 #include "fmt/base.h"
 #include "fmt/ostream.h"
 #include "gsl/gsl"
+#include "numeric.hpp"
 #endif
 
 

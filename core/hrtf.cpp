@@ -7,10 +7,10 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <functional>
-#include <istream>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -23,31 +23,39 @@
 #include <utility>
 #include <vector>
 
-#include "alnumeric.h"
-#include "ambidefs.h"
 #include "filters/splitter.h"
-#include "gsl/gsl"
 #include "hrtf_loader.hpp"
 #include "hrtf_resource.hpp"
 #include "mixer/hrtfdefs.h"
+#include "opthelpers.h"
 #include "polyphase_resampler.h"
 #include "zudl.hpp"
 
 #if HAVE_CXXMODULES
 import alstring;
+import common.std;
+import core.ambi_utils;
 import core.helpers;
 import filesystem;
 import format;
+import gsl;
+import hrtfstore;
 import logging;
+import numeric;
 import spanstream;
-import types;
+#include "gsl_macros.hpp"
 #else
+#include <istream>
 #include "alformat.hpp"
-#include "alformattypes.hpp"
+#include "alformatpath.hpp"
 #include "alstring.h"
+#include "core/ambi_utils.hpp"
 #include "core/helpers.hpp"
+#include "core/hrtfstore.hpp"
 #include "core/logging.h"
 #include "filesystem.h"
+#include "gsl/gsl"
+#include "numeric.hpp"
 #include "spanstream.hpp"
 #endif
 
@@ -88,7 +96,7 @@ auto CalcEvIndex(unsigned evcount, float ev) -> IdxBlend
 {
     ev = (std::numbers::inv_pi_v<float>*ev + 0.5f) * gsl::narrow_cast<float>(evcount-1);
 
-    const auto idx = float2uint(ev);
+    const auto idx = al::saturating_cast<unsigned>(ev);
     return IdxBlend{std::min(idx, evcount-1u), ev-gsl::narrow_cast<float>(idx)};
 }
 
@@ -99,7 +107,7 @@ auto CalcAzIndex(unsigned azcount, float az) -> IdxBlend
 {
     az = (std::numbers::inv_pi_v<float>*0.5f*az + 1.0f) * gsl::narrow_cast<float>(azcount);
 
-    const auto idx = float2uint(az);
+    const auto idx = al::saturating_cast<unsigned>(az);
     return IdxBlend{idx%azcount, az-gsl::narrow_cast<float>(idx)};
 }
 
@@ -156,13 +164,13 @@ void HrtfStore::getCoeffs(float const elevation, float const azimuth, float cons
         + mDelays[idx[1]][0]*blend[1]
         + mDelays[idx[2]][0]*blend[2]
         + mDelays[idx[3]][0]*blend[3];
-    delays[0] = fastf2u(d * float{1.0f/HrirDelayFracOne});
+    delays[0] = al::saturating_round<unsigned>(d * float{1.0f/HrirDelayFracOne});
 
     d = mDelays[idx[0]][1]*blend[0]
         + mDelays[idx[1]][1]*blend[1]
         + mDelays[idx[2]][1]*blend[2]
         + mDelays[idx[3]][1]*blend[3];
-    delays[1] = fastf2u(d * float{1.0f/HrirDelayFracOne});
+    delays[1] = al::saturating_round<unsigned>(d * float{1.0f/HrirDelayFracOne});
 
     /* Calculate the blended HRIR coefficients. */
     coeffs[0][0] = PassthruCoeff * (1.0f-dirfact);
@@ -297,7 +305,7 @@ void AddFileEntry(fs::path&& filename)
     using std::ranges::find;
     if(find(EnumeratedHrtfs, filename, &HrtfEntry::mFilename) != EnumeratedHrtfs.end())
     {
-        TRACE("Skipping duplicate file entry {}", al::u8_as_char(filename.u8string()));
+        TRACE("Skipping duplicate file entry {}", filename);
         return;
     }
 
@@ -312,7 +320,7 @@ void AddFileEntry(fs::path&& filename)
         newname = al::format("{} #{}", basename, ++count);
 
     auto const &entry = EnumeratedHrtfs.emplace_back(std::move(newname), std::move(filename));
-    TRACE("Adding file entry \"{}\"", al::u8_as_char(entry.mFilename.u8string()));
+    TRACE("Adding file entry \"{}\"", entry.mFilename);
 }
 
 /* Unfortunate that we have to duplicate AddFileEntry to take a memory buffer
@@ -325,7 +333,7 @@ void AddBuiltInEntry(std::string_view const dispname, unsigned const residx)
     using std::ranges::find;
     if(find(EnumeratedHrtfs, filename, &HrtfEntry::mFilename) != EnumeratedHrtfs.end())
     {
-        TRACE("Skipping duplicate file entry {}", al::u8_as_char(filename.u8string()));
+        TRACE("Skipping duplicate file entry {}", filename);
         return;
     }
 
@@ -338,7 +346,7 @@ void AddBuiltInEntry(std::string_view const dispname, unsigned const residx)
         newname = al::format("{} #{}", dispname, ++count);
 
     auto const &entry = EnumeratedHrtfs.emplace_back(std::move(newname), std::move(filename));
-    TRACE("Adding built-in entry \"{}\"", al::u8_as_char(entry.mFilename.u8string()));
+    TRACE("Adding built-in entry \"{}\"", entry.mFilename);
 }
 
 } // namespace
@@ -393,20 +401,20 @@ try {
         WARN("Device sample rate too large for HRTF ({}hz > {}hz)", devrate, MaxHrtfSampleRate);
         return nullptr;
     }
-    auto const fname = std::invoke([name]() -> std::u8string
+    auto const fname = std::invoke([name]() -> fs::path
     {
         auto const enumlock = std::lock_guard{EnumeratedHrtfLock};
         auto const entry_iter = std::ranges::find(EnumeratedHrtfs, name, &HrtfEntry::mDispName);
         if(entry_iter == EnumeratedHrtfs.cend())
-            return std::u8string{};
-        return entry_iter->mFilename.u8string();
+            return fs::path{};
+        return entry_iter->mFilename;
     });
     if(fname.empty())
         return nullptr;
 
     auto const loadlock = std::lock_guard{LoadedHrtfLock};
     auto handle = std::lower_bound(LoadedHrtfs.begin(), LoadedHrtfs.end(), fname,
-        [devrate](std::unique_ptr<HrtfStore> const&hrtf, std::u8string_view const filename) -> bool
+        [devrate](std::unique_ptr<HrtfStore>const& hrtf, fs::path const& filename) -> bool
     {
         return hrtf->mSampleRate < devrate
             || (hrtf->mSampleRate == devrate && hrtf->mFilename < filename);
@@ -418,42 +426,42 @@ try {
         return HrtfStorePtr{std::to_address(*handle)};
     }
 
-    auto builtin_name = [](std::u8string_view const name_) -> std::optional<int>
+    auto stream = std::invoke([&fname, name]() -> std::unique_ptr<std::istream>
     {
-        auto stream = al::ispanstream{al::u8_as_char(name_)};
-        if(stream.get() != '!')
-            return std::nullopt;
-        auto residx = int{};
-        if((stream >> residx).get() != '_')
-            return std::nullopt;
-        return residx;
-    };
-    auto stream = std::unique_ptr<std::istream>{};
-    if(auto residx = builtin_name(fname); residx.has_value())
-    {
-        TRACE("Loading built-in HRTF {}...", *residx);
-        auto const res = GetHrtfResource(*residx);
-        if(res.empty())
+        auto const resourceIdx = std::invoke([fnamespan=fname.string()]() -> std::optional<int>
         {
-            ERR("Could not get resource {}, {}", *residx, name);
-            return nullptr;
+            auto namestream = al::ispanstream{fnamespan};
+            if(namestream.get() != '!')
+                return std::nullopt;
+            auto idx = int{};
+            if((namestream >> idx).get() != '_')
+                return std::nullopt;
+            return idx;
+        });
+
+        if(resourceIdx.has_value())
+        {
+            TRACE("Loading built-in HRTF {}...", *resourceIdx);
+            auto const res = GetHrtfResource(*resourceIdx);
+            if(res.empty())
+            {
+                ERR("Could not get resource {}, {}", *resourceIdx, name);
+                return nullptr;
+            }
+            auto spstream = std::make_unique<al::ispanstream>(std::span<char>{}, std::ios::binary);
+            spstream->span(res);
+            return spstream;
         }
-        auto spstream = std::make_unique<al::ispanstream>(std::span<char>{}, std::ios::binary);
-        spstream->span(res);
-        stream = std::move(spstream);
-    }
-    else
-    {
-        TRACE("Loading {}...", al::u8_as_char(fname));
-        auto fstr = std::make_unique<fs::ifstream>(fs::path(fname), std::ios::binary);
+
+        TRACE("Loading {}...", fname);
+        auto fstr = std::make_unique<fs::ifstream>(fname, std::ios::binary);
         if(!fstr->is_open())
         {
-            ERR("Could not open {}", al::u8_as_char(fname));
+            ERR("Could not open {}", fname);
             return nullptr;
         }
-        stream = std::move(fstr);
-    }
-
+        return fstr;
+    });
     auto hrtf = LoadHrtf(*stream);
     stream.reset();
     Expects(hrtf != nullptr);
@@ -491,9 +499,9 @@ try {
         auto const rate_scale = gsl::narrow_cast<float>(devrate)
             / gsl::narrow_cast<float>(unsigned{hrtf->mSampleRate});
         std::ranges::transform(hrtf->mDelays | std::views::join, new_delays.begin(),
-            [&max_delay,rate_scale](u8 const oldval)
+            [&max_delay,rate_scale](std::uint8_t const oldval)
         {
-            auto const ret = std::round(gsl::narrow_cast<float>(oldval.c_val) * rate_scale)
+            auto const ret = std::round(gsl::narrow_cast<float>(oldval) * rate_scale)
                 / float{HrirDelayFracOne};
             max_delay = std::max(max_delay, ret);
             return ret;
@@ -516,15 +524,14 @@ try {
         std::ranges::transform(new_delays, (delays | std::views::join).begin(),
             [delay_scale](float const fdelay) -> std::uint8_t
         {
-            return al::saturate_cast<std::uint8_t>(float2int(fdelay*delay_scale + 0.5f));
+            return al::saturating_round<std::uint8_t>(fdelay*delay_scale);
         });
 
         /* Scale the IR size for the new sample rate and update the stored
          * sample rate.
          */
-        auto const newIrSize = std::round(gsl::narrow_cast<float>(unsigned{hrtf->mIrSize})
-            * rate_scale);
-        hrtf->mIrSize = gsl::narrow_cast<u8::value_t>(std::min(float{HrirLength}, newIrSize));
+        auto const newIrSize = al::saturating_round<std::uint8_t>(hrtf->mIrSize * rate_scale);
+        hrtf->mIrSize = std::min(std::uint8_t{HrirLength}, newIrSize);
         hrtf->mSampleRate = devrate & 0xff'ff'ff;
     }
 
@@ -559,7 +566,7 @@ void HrtfStore::dec_ref() noexcept
         {
             if(hrtf.mRef.load() == 0)
             {
-                TRACE("Unloading unused HRTF {}", al::u8_as_char(hrtf.mFilename));
+                TRACE("Unloading unused HRTF {}", hrtf.mFilename);
                 return true;
             }
             return false;

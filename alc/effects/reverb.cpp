@@ -27,13 +27,10 @@
 #include <cstdint>
 #include <iterator>
 #include <numbers>
-#include <numeric>
 #include <ranges>
 #include <span>
 
 #include "alc/effects/base.h"
-#include "alnumeric.h"
-#include "core/ambidefs.h"
 #include "core/bufferline.h"
 #include "core/effects/base.h"
 #include "core/effectslot.h"
@@ -41,20 +38,26 @@
 #include "core/filters/splitter.h"
 #include "core/mixer.h"
 #include "core/mixer/defs.h"
-#include "gsl/gsl"
 #include "intrusive_ptr.h"
 #include "opthelpers.h"
 #include "vector.h"
 #include "zudl.hpp"
 
 #if HAVE_CXXMODULES
+import core.ambi_utils;
 import core.context;
 import core.device;
 import cubic_tables;
+import gsl;
+import numeric;
+#include "gsl_macros.hpp"
 #else
+#include "core/ambi_utils.hpp"
 #include "core/context.h"
 #include "core/cubic_tables.hpp"
 #include "core/device.h"
+#include "gsl/gsl"
+#include "numeric.hpp"
 #endif
 
 struct BufferStorage;
@@ -286,7 +289,7 @@ struct DelayLineI {
         /* All line lengths are powers of 2, calculated from their lengths in
          * seconds, rounded up.
          */
-        auto samples = float2uint(std::ceil(length*frequency));
+        auto samples = al::saturating_cast<unsigned>(std::ceil(length*frequency));
         samples = std::bit_ceil(samples + extra);
 
         /* Return the sample count for accumulation. */
@@ -306,7 +309,7 @@ struct DelayLineU {
     static auto calcLineLength(float const length, float const frequency, unsigned const extra)
         -> std::size_t
     {
-        auto samples = float2uint(std::ceil(length*frequency));
+        auto samples = al::saturating_cast<unsigned>(std::ceil(length*frequency));
         samples = std::bit_ceil(samples + extra);
 
         return samples*NUM_LINES;
@@ -751,8 +754,8 @@ void ReverbState::allocLines(float const frequency)
     /* The max number of samples done per iteration of the late reverb's vector
      * all-pass.
      */
-    const auto late_vecap_extra = float2uint(std::ceil(LATE_ALLPASS_LENGTHS.front() * multiplier
-        * frequency));
+    const auto late_vecap_extra = al::saturating_cast<unsigned>(
+        std::ceil(LATE_ALLPASS_LENGTHS.front() * multiplier * frequency));
 
     auto linelengths = std::array<std::size_t, 11>{};
     auto oidx = 0_uz;
@@ -960,12 +963,12 @@ void EarlyReflections::updateLines(float const density_mult, float const diffusi
     /* Calculate the delay length of each all-pass line. */
     std::ranges::transform(EARLY_ALLPASS_LENGTHS, Allpass.Offset.begin(),
         [density_mult,frequency](float const length) -> unsigned
-    { return float2uint(length * density_mult * frequency); });
+    { return al::saturating_cast<unsigned>(length * density_mult * frequency); });
 
     /* Calculate the delay length of each delay line. */
     std::ranges::transform(EARLY_LINE_LENGTHS, Offset.begin(),
         [density_mult,frequency](float const length) -> unsigned
-    { return float2uint(length * density_mult * frequency); });
+    { return al::saturating_cast<unsigned>(length * density_mult * frequency); });
 
     /* Calculate the gain (coefficient) for the secondary reflections based on
      * the average delay and decay time.
@@ -988,7 +991,7 @@ void Modulation::updateModulator(float const modTime, float const modDepth, floa
      * appropriate step size to generate an LFO, which will vary the feedback
      * delay over time.
      */
-    Step = std::max(fastf2u(MOD_FRACONE / (frequency * modTime)), 1u);
+    Step = std::max(al::saturating_round<unsigned>(float{MOD_FRACONE} / (frequency*modTime)), 1u);
 
     /* The modulation depth effects the amount of frequency change over the
      * range of the sinus. It needs to be scaled by the modulation time so that
@@ -1047,7 +1050,7 @@ void LateReverb::updateLines(float const density_mult, float const diffusion,
     /* Calculate the delay length of each all-pass line. */
     std::ranges::transform(LATE_ALLPASS_LENGTHS, VecAp.Offset.begin(),
         [density_mult,frequency](float const length) -> unsigned
-    { return float2uint(length*density_mult * frequency); });
+    { return al::saturating_cast<unsigned>(length*density_mult * frequency); });
 
     /* Calculate the length of each feedback delay line. A cubic resampler is
      * used for modulation on the feedback delay, which includes one sample of
@@ -1058,7 +1061,7 @@ void LateReverb::updateLines(float const density_mult, float const diffusion,
         [density_mult](float const length) noexcept -> float { return length * density_mult; });
 
     std::ranges::transform(lengths, Offset.begin(), [frequency](float const length) -> unsigned
-    { return std::max(float2uint(length*frequency + 0.5f), 1u) - 1u; });
+    { return std::max(al::saturating_cast<unsigned>(length*frequency + 0.5f), 1u) - 1u; });
 
     /* Approximate the absorption that the vector all-pass would exhibit given
      * the current diffusion so we don't have to process a full T60 filter for
@@ -1067,8 +1070,11 @@ void LateReverb::updateLines(float const density_mult, float const diffusion,
      */
     std::ranges::transform(LATE_ALLPASS_LENGTHS, lengths, lengths.begin(),
         [density_mult,diffusion,moddepth=Mod.Depth/frequency](float const length,
-        float const curlength) -> float
-    { return lerpf(length, LateAllpassAverage, diffusion)*density_mult + moddepth + curlength; });
+            float const curlength) -> float
+        {
+            return al::lerp(length, LateAllpassAverage, diffusion)*density_mult + moddepth
+                + curlength;
+        });
 
     /* Calculate the T60 damping coefficients for each line. */
     std::ignore = std::ranges::mismatch(T60, lengths,
@@ -1097,7 +1103,7 @@ void ReverbPipeline::updateDelayLine(float const gain, float const earlyDelay,
     mEarlyDelayCoeff[1] = gain;
     std::ranges::transform(EARLY_TAP_LENGTHS, (mEarlyDelayTap | std::views::elements<1>).begin(),
         [earlyDelay,frequency,density_mult](float const length) -> unsigned
-    { return float2uint((length*density_mult + earlyDelay) * frequency); });
+    { return al::saturating_cast<unsigned>((length*density_mult + earlyDelay) * frequency); });
 
     std::ranges::transform(LATE_LINE_LENGTHS, (mLateDelayTap | std::views::elements<1>).begin(),
         [lateDelay,frequency,density_mult](float length) noexcept -> unsigned
@@ -1108,7 +1114,7 @@ void ReverbPipeline::updateDelayLine(float const gain, float const earlyDelay,
          */
         length -= LATE_LINE_LENGTHS.front();
         length = length*float{1.0f/NUM_LINES}*density_mult + lateDelay;
-        return float2uint(length * frequency);
+        return al::saturating_cast<unsigned>(length * frequency);
     });
 }
 
@@ -1606,9 +1612,10 @@ void ReverbPipeline::processEarly(DelayLineU const &main_delay, std::size_t offs
                 tmp = std::ranges::transform(input.subspan(early_delay_tap0, td),
                     input.subspan(early_delay_tap1, td), tmp,
                     [earlycoeff0,earlycoeff1,fadeStep,&fadeCount](float const in0, float const in1)
-                    noexcept -> float
+                        noexcept -> float
                 {
-                    const auto ret = lerpf(in0*earlycoeff0, in1*earlycoeff1, fadeStep*fadeCount);
+                    auto const ret = al::lerp(in0*earlycoeff0, in1*earlycoeff1,
+                        fadeStep*fadeCount);
                     fadeCount += 1.0f;
                     return ret;
                 }).out;
@@ -1685,7 +1692,7 @@ auto Modulation::calcDelays(std::size_t const todo) -> std::span<unsigned const>
             ? ((-16.0f * x * x) + (8.0f * x))
             : ((16.0f * x * x) + (-8.0f * x) + (-16.0f * x) + 8.0f);
         idx += step;
-        return float2uint((lfo+1.0f) * depth);
+        return al::saturating_cast<unsigned>((lfo+1.0f) * depth);
     });
     Index = idx;
     return delays;
@@ -1900,8 +1907,8 @@ struct ReverbStateFactory final : EffectStateFactory {
 
 } // namespace
 
-auto ReverbStateFactory_getFactory() -> gsl::not_null<EffectStateFactory*>
+auto ReverbStateFactory_getFactory() -> EffectStateFactory&
 {
-    static ReverbStateFactory ReverbFactory{};
-    return gsl::make_not_null(&ReverbFactory);
+    static auto ReverbFactory = ReverbStateFactory{};
+    return ReverbFactory;
 }

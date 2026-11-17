@@ -39,6 +39,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -61,21 +62,8 @@
 #include <utility>
 #include <vector>
 
-#include "AL/al.h"
-#include "AL/alc.h"
-#include "AL/alext.h"
-#include "AL/efx.h"
-
-#include "al/auxeffectslot.h"
-#include "al/buffer.h"
-#include "al/debug.h"
-#include "al/eax/effect.h"
-#include "al/effect.h"
-#include "al/filter.h"
-#include "al/source.h"
 #include "alc/events.h"
 #include "alconfig.h"
-#include "alnumeric.h"
 #include "alu.h"
 #include "atomic.h"
 #include "core/ambidefs.h"
@@ -92,16 +80,14 @@
 #include "core/mastering.h"
 #include "core/tsmefilter.hpp"
 #include "core/uhjfilter.h"
-#include "core/voice.h"
 #include "core/voice_change.h"
 #include "effects/base.h"
+#include "envutils.hpp"
 #include "export_list.h"
 #include "flexarray.h"
-#include "gsl/gsl"
 #include "inprogext.h"
 #include "intrusive_ptr.h"
 #include "opthelpers.h"
-#include "strutils.hpp"
 #include "zudl.hpp"
 
 #include "backends/base.hpp"
@@ -161,30 +147,57 @@
 
 #if ALSOFT_EAX
 #include "al/eax/api.h"
+#include "al/eax/effect.h"
 #include "al/eax/globals.h"
 #endif
 
 #if HAVE_CXXMODULES
+/* HACK: GCC 16 seems to have an issue when trying to use the StereoEncoding
+ * enum in an optional when it's defined through the module. Including the
+ * header to directly define it seems to work around it.
+ */
+#if !defined(__INTEL_COMPILER) && !defined(__clang__) && defined(__GNUC__) && __GNUC__ == 16
+#include "alc/device.h"
+#endif
+import openal;
+
+import al.iface;
 import alc.context;
 import alc.device;
 import alstring;
 import backends.exception;
 import core.helpers;
+import core.voice;
 import fmtlib;
 import format;
+import gsl;
 import logging;
-import types;
+import numeric;
+#include "gsl_macros.hpp"
 #else
+#include "AL/al.h"
+#include "AL/alc.h"
+#include "AL/alext.h"
+#include "AL/efx.h"
+
+#include "al/auxeffectslot.h"
+#include "al/buffer.h"
+#include "al/debug.h"
+#include "al/effect.h"
+#include "al/filter.h"
+#include "al/source.h"
 #include "alc/backends/exception.hpp"
 #include "alc/context.hpp"
 #include "alc/device.h"
 #include "alformat.hpp"
-#include "alformattypes.hpp"
 #include "alstring.h"
 #include "core/helpers.hpp"
 #include "core/logging.h"
+#include "core/voice.h"
 #include "fmt/format.h"
 #include "fmt/ranges.h"
+#include "gsl/gsl"
+#include "numeric.hpp"
 #endif
 
 
@@ -221,15 +234,22 @@ using std::chrono::nanoseconds;
 
 using voidp = void*;
 
-
-[[gnu::used, maybe_unused]] auto gProcessRunning = true;
+#if __has_cpp_attribute(gnu::used)
+#define DECL_USED [[gnu::used]]
+#else
+#define DECL_USED
+#endif
+DECL_USED [[maybe_unused]] auto gProcessRunning = true;
 struct ProcessWatcher {
-    ProcessWatcher() = default;
-    ProcessWatcher(const ProcessWatcher&) = delete;
+    /* Force a non-trivial constructor so the destructor is set to run at the
+     * appropriate time.
+     * NOLINTNEXTLINE(modernize-use-equals-default) */
+    ProcessWatcher() noexcept { gProcessRunning = true; }
     ~ProcessWatcher() { gProcessRunning = false; }
+    ProcessWatcher(const ProcessWatcher&) = delete;
     auto operator=(const ProcessWatcher&) -> ProcessWatcher& = delete;
 };
-[[gnu::used, maybe_unused]] auto gProcessWatcher = ProcessWatcher{};
+DECL_USED [[maybe_unused]] auto gProcessWatcher = ProcessWatcher{};
 
 /************************************************
  * Backends
@@ -369,7 +389,8 @@ constexpr auto DitherRNGSeed = 22222u;
         "ALC_SOFT_output_mode "
         "ALC_SOFT_pause_device "
         "ALC_SOFT_reopen_device "
-        "ALC_SOFT_system_events";
+        "ALC_SOFT_system_events "
+        "ALC_SOFTX_auxiliary_slot_request";
 }
 
 /* Returns the above NoDeviceExt string as an array of string_views. */
@@ -443,15 +464,14 @@ void alc_initconfig()
     TRACE("Initializing library v{}-{} {}", ALSOFT_VERSION,
         std::string_view{ALSOFT_GIT_COMMIT_HASH}.empty() ? "unknown" : ALSOFT_GIT_COMMIT_HASH,
         std::string_view{ALSOFT_GIT_BRANCH}.empty() ? "unknown" : ALSOFT_GIT_BRANCH);
-    {
-        auto const names = BackendList | std::views::transform(&BackendInfo::name);
-        TRACE("{}", fmt::format("Supported backends: {}", fmt::join(names, ", ")));
-    }
+    TRACE("{}", fmt::format("Supported backends: {}",
+        fmt::join(BackendList | std::views::transform(&BackendInfo::name), ", ")));
+
     ReadALConfig();
 
     if(auto const suspendmode = al::getenv("__ALSOFT_SUSPEND_CONTEXT"))
     {
-        if(is_eq(al::case_compare(*suspendmode, "ignore"sv)))
+        if(al::ci_equal(*suspendmode, "ignore"sv))
         {
             SuspendDefers = false;
             TRACE("Selected context suspend behavior, \"ignore\"");
@@ -475,8 +495,7 @@ void alc_initconfig()
 #endif
     if(auto cpuopt = ConfigValueStr({}, {}, "disable-cpu-exts"sv))
     {
-        if(auto const cpulist = std::string_view{*cpuopt};
-            is_eq(al::case_compare(cpulist, "all"sv)))
+        if(auto const cpulist = std::string_view{*cpuopt}; al::ci_equal(cpulist, "all"sv))
             capfilter.reset();
         else
         {
@@ -491,15 +510,15 @@ void alc_initconfig()
                 if(entry.empty())
                     return;
 
-                if(is_eq(al::case_compare(entry, "sse"sv)))
+                if(al::ci_equal(entry, "sse"sv))
                     capfilter.reset(CPUCap::SSE);
-                else if(is_eq(al::case_compare(entry, "sse2"sv)))
+                else if(al::ci_equal(entry, "sse2"sv))
                     capfilter.reset(CPUCap::SSE2);
-                else if(is_eq(al::case_compare(entry, "sse3"sv)))
+                else if(al::ci_equal(entry, "sse3"sv))
                     capfilter.reset(CPUCap::SSE3);
-                else if(is_eq(al::case_compare(entry, "sse4.1"sv)))
+                else if(al::ci_equal(entry, "sse4.1"sv))
                     capfilter.reset(CPUCap::SSE4_1);
-                else if(is_eq(al::case_compare(entry, "neon"sv)))
+                else if(al::ci_equal(entry, "neon"sv))
                     capfilter.reset(CPUCap::NEON);
                 else
                     WARN("Invalid CPU extension \"{}\"", entry);
@@ -541,7 +560,7 @@ void alc_initconfig()
         {
             if(auto const optval = al::getenv(envname))
             {
-                return is_eq(al::case_compare(*optval, "true"sv))
+                return al::ci_equal(*optval, "true"sv)
                     or strtol(optval->c_str(), nullptr, 0) == 1;
             }
             return GetConfigValueBool({}, "game_compat", optname, false);
@@ -557,22 +576,22 @@ void alc_initconfig()
 
     if(auto uhjfiltopt = ConfigValueStr({}, "uhj"sv, "decode-filter"sv))
     {
-        if(is_eq(al::case_compare(*uhjfiltopt, "fir256"sv)))
+        if(al::ci_equal(*uhjfiltopt, "fir256"sv))
             UhjDecodeQuality = UhjQualityType::FIR256;
-        else if(is_eq(al::case_compare(*uhjfiltopt, "fir512"sv)))
+        else if(al::ci_equal(*uhjfiltopt, "fir512"sv))
             UhjDecodeQuality = UhjQualityType::FIR512;
-        else if(is_eq(al::case_compare(*uhjfiltopt, "iir"sv)))
+        else if(al::ci_equal(*uhjfiltopt, "iir"sv))
             UhjDecodeQuality = UhjQualityType::IIR;
         else
             WARN("Unsupported uhj/decode-filter: {}", *uhjfiltopt);
     }
     if(auto uhjfiltopt = ConfigValueStr({}, "uhj"sv, "encode-filter"sv))
     {
-        if(is_eq(al::case_compare(*uhjfiltopt, "fir256"sv)))
+        if(al::ci_equal(*uhjfiltopt, "fir256"sv))
             UhjEncodeQuality = UhjQualityType::FIR256;
-        else if(is_eq(al::case_compare(*uhjfiltopt, "fir512"sv)))
+        else if(al::ci_equal(*uhjfiltopt, "fir512"sv))
             UhjEncodeQuality = UhjQualityType::FIR512;
-        else if(is_eq(al::case_compare(*uhjfiltopt, "iir"sv)))
+        else if(al::ci_equal(*uhjfiltopt, "iir"sv))
             UhjEncodeQuality = UhjQualityType::IIR;
         else
             WARN("Unsupported uhj/encode-filter: {}", *uhjfiltopt);
@@ -580,29 +599,29 @@ void alc_initconfig()
 
     if(auto tsmefiltopt = ConfigValueStr({}, "tsme"sv, "decode-filter"sv))
     {
-        if(is_eq(al::case_compare(*tsmefiltopt, "fir256"sv)))
+        if(al::ci_equal(*tsmefiltopt, "fir256"sv))
             TsmeDecodeQuality = TsmeQualityType::FIR256;
-        else if(is_eq(al::case_compare(*tsmefiltopt, "fir512"sv)))
+        else if(al::ci_equal(*tsmefiltopt, "fir512"sv))
             TsmeDecodeQuality = TsmeQualityType::FIR512;
-        else if(is_eq(al::case_compare(*tsmefiltopt, "iir"sv)))
+        else if(al::ci_equal(*tsmefiltopt, "iir"sv))
             TsmeDecodeQuality = TsmeQualityType::IIR;
         else
             WARN("Unsupported tsme/decode-filter: {}", *tsmefiltopt);
     }
     if(auto tsmefiltopt = ConfigValueStr({}, "tsme"sv, "encode-filter"sv))
     {
-        if(is_eq(al::case_compare(*tsmefiltopt, "fir256"sv)))
+        if(al::ci_equal(*tsmefiltopt, "fir256"sv))
             TsmeEncodeQuality = TsmeQualityType::FIR256;
-        else if(is_eq(al::case_compare(*tsmefiltopt, "fir512"sv)))
+        else if(al::ci_equal(*tsmefiltopt, "fir512"sv))
             TsmeEncodeQuality = TsmeQualityType::FIR512;
-        else if(is_eq(al::case_compare(*tsmefiltopt, "iir"sv)))
+        else if(al::ci_equal(*tsmefiltopt, "iir"sv))
             TsmeEncodeQuality = TsmeQualityType::IIR;
         else
             WARN("Unsupported tsme/encode-filter: {}", *tsmefiltopt);
     }
 
     if(auto traperr = al::getenv("ALSOFT_TRAP_ERROR"); traperr
-        and (is_eq(al::case_compare(*traperr, "true"sv))
+        and (al::ci_equal(*traperr, "true"sv)
             or std::strtol(traperr->c_str(), nullptr, 0) == 1))
     {
         TrapALError  = true;
@@ -612,14 +631,14 @@ void alc_initconfig()
     {
         traperr = al::getenv("ALSOFT_TRAP_AL_ERROR");
         if(traperr)
-            TrapALError = is_eq(al::case_compare(*traperr, "true"sv))
+            TrapALError = al::ci_equal(*traperr, "true"sv)
                 or strtol(traperr->c_str(), nullptr, 0) == 1;
         else
             TrapALError = GetConfigValueBool({}, {}, "trap-al-error"sv, false);
 
         traperr = al::getenv("ALSOFT_TRAP_ALC_ERROR");
         if(traperr)
-            al::Device::sTrapALCError = is_eq(al::case_compare(*traperr, "true"sv))
+            al::Device::sTrapALCError = al::ci_equal(*traperr, "true"sv)
                 or strtol(traperr->c_str(), nullptr, 0) == 1;
         else
             al::Device::sTrapALCError = GetConfigValueBool({}, {}, "trap-alc-error"sv, false);
@@ -754,28 +773,35 @@ void alc_initconfig()
     else
         eax_g_is_enabled = true;
 
-    if((DisabledEffects.test(EAXREVERB_EFFECT) || DisabledEffects.test(CHORUS_EFFECT))
-        && eax_g_is_enabled)
+    if((DisabledEffects.test(EffectTypeFlag::EaxReverb)
+            || DisabledEffects.test(EffectTypeFlag::Chorus)) && eax_g_is_enabled)
     {
         eax_g_is_enabled = false;
         TRACE("EAX disabled because {} disabled.",
-            (DisabledEffects.test(EAXREVERB_EFFECT) && DisabledEffects.test(CHORUS_EFFECT))
+            (DisabledEffects.test(EffectTypeFlag::EaxReverb)
+                && DisabledEffects.test(EffectTypeFlag::Chorus))
                 ? "EAXReverb and Chorus are"sv :
-            DisabledEffects.test(EAXREVERB_EFFECT) ? "EAXReverb is"sv :
-            DisabledEffects.test(CHORUS_EFFECT) ? "Chorus is"sv : ""sv);
+            DisabledEffects.test(EffectTypeFlag::EaxReverb) ? "EAXReverb is"sv :
+            DisabledEffects.test(EffectTypeFlag::Chorus) ? "Chorus is"sv : ""sv);
     }
 
     if(eax_g_is_enabled)
     {
         if(auto optval = al::getenv("ALSOFT_EAX_TRACE_COMMITS"))
         {
-            EaxTraceCommits = is_eq(al::case_compare(*optval, "true"sv))
+            EaxTraceCommits = al::ci_equal(*optval, "true"sv)
                 or strtol(optval->c_str(), nullptr, 0) == 1;
         }
         else
             EaxTraceCommits = GetConfigValueBool({}, "eax"sv, "trace-commits"sv, false);
     }
 #endif // ALSOFT_EAX
+
+    /* Place a static process watcher after initialization, so gProcessRunning
+     * is cleared early during teardown.
+     */
+    DECL_USED [[maybe_unused]] static const
+    auto sProcessWatcher = ProcessWatcher{};
 }
 void InitConfig()
 {
@@ -940,7 +966,7 @@ auto EnumFromDevFmt(DevFmtType const type) -> ALCenum
     case DevFmtUInt: return ALC_UNSIGNED_INT_SOFT;
     case DevFmtFloat: return ALC_FLOAT_SOFT;
     }
-    throw std::runtime_error{al::format("Invalid DevFmtType: {}", int{al::to_underlying(type)})};
+    throw std::runtime_error{al::format("Invalid DevFmtType: {:#x}", al::to_underlying(type))};
 }
 
 auto DevFmtChannelsFromEnum(ALCenum const channels) -> std::optional<DevFmtChannels>
@@ -975,8 +1001,8 @@ auto EnumFromDevFmt(DevFmtChannels const channels) -> ALCenum
     case DevFmtX3D71:
         break;
     }
-    throw std::runtime_error{al::format("Invalid DevFmtChannels: {}",
-        int{al::to_underlying(channels)})};
+    throw std::runtime_error{al::format("Invalid DevFmtChannels: {:#x}",
+        al::to_underlying(channels))};
 }
 
 auto DevAmbiLayoutFromEnum(ALCenum const layout) -> std::optional<DevAmbiLayout>
@@ -996,8 +1022,8 @@ auto EnumFromDevAmbi(DevAmbiLayout const layout) -> ALCenum
     case DevAmbiLayout::FuMa: return ALC_FUMA_SOFT;
     case DevAmbiLayout::ACN: return ALC_ACN_SOFT;
     }
-    throw std::runtime_error{al::format("Invalid DevAmbiLayout: {}",
-        int{al::to_underlying(layout)})};
+    throw std::runtime_error{al::format("Invalid DevAmbiLayout: {:#x}",
+        al::to_underlying(layout))};
 }
 
 auto DevAmbiScalingFromEnum(ALCenum const scaling) -> std::optional<DevAmbiScaling>
@@ -1019,8 +1045,8 @@ auto EnumFromDevAmbi(DevAmbiScaling const scaling) -> ALCenum
     case DevAmbiScaling::SN3D: return ALC_SN3D_SOFT;
     case DevAmbiScaling::N3D: return ALC_N3D_SOFT;
     }
-    throw std::runtime_error{al::format("Invalid DevAmbiScaling: {}",
-        int{al::to_underlying(scaling)})};
+    throw std::runtime_error{al::format("Invalid DevAmbiScaling: {:#x}",
+        al::to_underlying(scaling))};
 }
 
 
@@ -1080,18 +1106,20 @@ constexpr auto X71Downmix = std::array{
 };
 
 
-auto CreateDeviceLimiter(al::Device const& device, f32 const threshold)
+auto CreateDeviceLimiter(al::Device const& device, float const threshold)
     -> std::unique_ptr<Compressor>
 {
     constexpr auto flags = Compressor::FlagBits{}.set(Compressor::Flags::AutoKnee)
         .set(Compressor::Flags::AutoAttack).set(Compressor::Flags::AutoRelease)
         .set(Compressor::Flags::AutoPostGain).set(Compressor::Flags::AutoDeclip);
 
-    return Compressor::Create({.NumChans = usize{device.RealOut.Buffer.size()}.cast_to<u32>(),
-        .SampleRate = sys_uint{device.mSampleRate}.cast_to<f32>(), .AutoFlags = flags,
-        .LookAheadTime = 0.001_f32, .HoldTime = 0.002_f32, .PreGainDb = 0.0_f32,
-        .PostGainDb = 0.0_f32, .ThresholdDb = threshold, .Ratio = f32::infinity(),
-        .KneeDb = 0.0_f32, .AttackTime = 0.02_f32, .ReleaseTime = 0.2_f32});
+    return Compressor::Create({
+        .NumChans = gsl::narrow<std::uint32_t>(device.RealOut.Buffer.size()),
+        .SampleRate = gsl::narrow_cast<float>(device.mSampleRate), .AutoFlags = flags,
+        .LookAheadTime = 0.001f, .HoldTime = 0.002f, .PreGainDb = 0.0f,
+        .PostGainDb = 0.0f, .ThresholdDb = threshold,
+        .Ratio = std::numeric_limits<float>::infinity(), .KneeDb = 0.0f, .AttackTime = 0.02f,
+        .ReleaseTime = 0.2f});
 }
 
 /**
@@ -1147,6 +1175,7 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
     auto buffer_size = ALCuint{DefaultUpdateSize * DefaultNumUpdates};
     auto hrtf_id = -1;
     auto aorder = ALCuint{0};
+    auto numSlots = device.AuxiliaryEffectSlotMax;
 
     if(device.Type != DeviceType::Loopback)
     {
@@ -1157,7 +1186,7 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
             optsrate = std::clamp<unsigned>(*freqopt, MinOutputRate, MaxOutputRate);
 
             auto const scale = gsl::narrow_cast<double>(*optsrate) / double{DefaultOutputRate};
-            period_size = gsl::narrow_cast<ALCuint>(std::lround(period_size * scale));
+            period_size = al::saturating_round<ALCuint>(period_size * scale);
         }
 
         if(auto persizeopt = device.configValue<unsigned>({}, "period_size"))
@@ -1173,58 +1202,58 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
                 std::string_view name;
                 DevFmtType type;
             };
-            constexpr std::array typelist{
-                TypeMap{"int8"sv,    DevFmtByte  },
-                TypeMap{"uint8"sv,   DevFmtUByte },
-                TypeMap{"int16"sv,   DevFmtShort },
-                TypeMap{"uint16"sv,  DevFmtUShort},
-                TypeMap{"int32"sv,   DevFmtInt   },
-                TypeMap{"uint32"sv,  DevFmtUInt  },
-                TypeMap{"float32"sv, DevFmtFloat },
-            };
+            auto constexpr typelist = std::to_array<TypeMap>({
+                {.name="int8"sv,    .type=DevFmtByte  },
+                {.name="uint8"sv,   .type=DevFmtUByte },
+                {.name="int16"sv,   .type=DevFmtShort },
+                {.name="uint16"sv,  .type=DevFmtUShort},
+                {.name="int32"sv,   .type=DevFmtInt   },
+                {.name="uint32"sv,  .type=DevFmtUInt  },
+                {.name="float32"sv, .type=DevFmtFloat },
+            });
 
             const auto iter = std::ranges::find_if(typelist,
-                [svfmt=std::string_view{*typeopt}](TypeMap const &entry) -> bool
-                { return is_eq(al::case_compare(entry.name, svfmt)); });
+                [svfmt=std::string_view{*typeopt}](std::string_view const entry) -> bool
+                { return al::ci_equal(entry, svfmt); }, &TypeMap::name);
             if(iter == typelist.end())
                 ERR("Unsupported sample-type: {}", *typeopt);
             else
                 opttype = iter->type;
         }
         if(auto const chanopt = device.configValue<std::string>({}, "channels"); chanopt
-            and is_neq(al::case_compare(*chanopt, "surround3d71"sv)))
+            and al::ci_nequal(*chanopt, "surround3d71"sv))
         {
             struct ChannelMap {
                 std::string_view name;
                 DevFmtChannels chans;
-                u8 order;
+                std::uint8_t order;
             };
-            constexpr auto chanlist = std::array{
-                ChannelMap{"mono"sv,       DevFmtMono,   0_u8},
-                ChannelMap{"stereo"sv,     DevFmtStereo, 0_u8},
-                ChannelMap{"quad"sv,       DevFmtQuad,   0_u8},
-                ChannelMap{"surround51"sv, DevFmtX51,    0_u8},
-                ChannelMap{"surround61"sv, DevFmtX61,    0_u8},
-                ChannelMap{"surround71"sv, DevFmtX71,    0_u8},
-                ChannelMap{"3d71"sv,         DevFmtX3D71, 0_u8},
-                ChannelMap{"surround714"sv,  DevFmtX714,  0_u8},
-                ChannelMap{"surround7144"sv, DevFmtX7144, 0_u8},
-                ChannelMap{"ambi1"sv, DevFmtAmbi3D, 1_u8},
-                ChannelMap{"ambi2"sv, DevFmtAmbi3D, 2_u8},
-                ChannelMap{"ambi3"sv, DevFmtAmbi3D, 3_u8},
-                ChannelMap{"ambi4"sv, DevFmtAmbi3D, 4_u8},
-                ChannelMap{"surround51rear"sv, DevFmtX51, 0_u8},
-            };
+            auto constexpr chanlist = std::to_array<ChannelMap>({
+                {.name="mono"sv,       .chans=DevFmtMono,   .order=0},
+                {.name="stereo"sv,     .chans=DevFmtStereo, .order=0},
+                {.name="quad"sv,       .chans=DevFmtQuad,   .order=0},
+                {.name="surround51"sv, .chans=DevFmtX51,    .order=0},
+                {.name="surround61"sv, .chans=DevFmtX61,    .order=0},
+                {.name="surround71"sv, .chans=DevFmtX71,    .order=0},
+                {.name="3d71"sv,         .chans=DevFmtX3D71, .order=0},
+                {.name="surround714"sv,  .chans=DevFmtX714,  .order=0},
+                {.name="surround7144"sv, .chans=DevFmtX7144, .order=0},
+                {.name="ambi1"sv, .chans=DevFmtAmbi3D, .order=1},
+                {.name="ambi2"sv, .chans=DevFmtAmbi3D, .order=2},
+                {.name="ambi3"sv, .chans=DevFmtAmbi3D, .order=3},
+                {.name="ambi4"sv, .chans=DevFmtAmbi3D, .order=4},
+                {.name="surround51rear"sv, .chans=DevFmtX51, .order=0},
+            });
 
             const auto iter = std::ranges::find_if(chanlist,
-                [svfmt=std::string_view{*chanopt}](ChannelMap const &entry) -> bool
-                { return is_eq(al::case_compare(entry.name, svfmt)); });
+                [svfmt=std::string_view{*chanopt}](std::string_view const entry) -> bool
+                { return al::ci_equal(entry, svfmt); }, &ChannelMap::name);
             if(iter == chanlist.end())
                 ERR("Unsupported channels: {}", *chanopt);
             else
             {
                 optchans = iter->chans;
-                aorder = iter->order.c_val;
+                aorder = iter->order;
             }
         }
         else if(chanopt)
@@ -1235,29 +1264,29 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
         }
         if(auto ambiopt = device.configValue<std::string>({}, "ambi-format"sv))
         {
-            if(is_eq(al::case_compare(*ambiopt, "fuma"sv)))
-            {
-                optlayout = DevAmbiLayout::FuMa;
-                optscale = DevAmbiScaling::FuMa;
-            }
-            else if(is_eq(al::case_compare(*ambiopt, "acn+fuma"sv)))
-            {
-                optlayout = DevAmbiLayout::ACN;
-                optscale = DevAmbiScaling::FuMa;
-            }
-            else if(is_eq(al::case_compare(*ambiopt, "ambix"sv))
-                or is_eq(al::case_compare(*ambiopt, "acn+sn3d"sv)))
-            {
-                optlayout = DevAmbiLayout::ACN;
-                optscale = DevAmbiScaling::SN3D;
-            }
-            else if(is_eq(al::case_compare(*ambiopt, "acn+n3d"sv)))
-            {
-                optlayout = DevAmbiLayout::ACN;
-                optscale = DevAmbiScaling::N3D;
-            }
-            else
+            struct FormatMap {
+                std::string_view name;
+                DevAmbiLayout layout;
+                DevAmbiScaling scaling;
+            };
+            auto constexpr ambimap = std::to_array<FormatMap>({
+                {.name="fuma"sv, .layout=DevAmbiLayout::FuMa, .scaling=DevAmbiScaling::FuMa},
+                {.name="anc+fuma"sv, .layout=DevAmbiLayout::ACN, .scaling=DevAmbiScaling::FuMa},
+                {.name="ambix"sv, .layout=DevAmbiLayout::ACN, .scaling=DevAmbiScaling::SN3D},
+                {.name="acn+sn3d"sv, .layout=DevAmbiLayout::ACN, .scaling=DevAmbiScaling::SN3D},
+                {.name="acn+n3d"sv, .layout=DevAmbiLayout::ACN, .scaling=DevAmbiScaling::N3D},
+            });
+
+            auto const iter = std::ranges::find_if(ambimap,
+                [svfmt=std::string_view{*ambiopt}](std::string_view const entry) -> bool
+                { return al::ci_equal(entry, svfmt); }, &FormatMap::name);
+            if(iter == ambimap.end())
                 ERR("Unsupported ambi-format: {}", *ambiopt);
+            else
+            {
+                optlayout = iter->layout;
+                optscale = iter->scaling;
+            }
         }
 
         if(aorder > 3 && (optlayout == DevAmbiLayout::FuMa || optscale == DevAmbiScaling::FuMa))
@@ -1271,28 +1300,27 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
         {
             WARN("general/hrtf is deprecated, please use stereo-encoding instead");
 
-            if(is_eq(al::case_compare(*hrtfopt, "true"sv)))
+            if(al::ci_equal(*hrtfopt, "true"sv))
                 stereomode = StereoEncoding::Hrtf;
-            else if(is_eq(al::case_compare(*hrtfopt, "false"sv)))
+            else if(al::ci_equal(*hrtfopt, "false"sv))
             {
                 if(!stereomode || *stereomode == StereoEncoding::Hrtf)
                     stereomode = StereoEncoding::Default;
             }
-            else if(is_neq(al::case_compare(*hrtfopt, "auto"sv)))
+            else if(al::ci_nequal(*hrtfopt, "auto"sv))
                 ERR("Unexpected hrtf value: {}", *hrtfopt);
         }
     }
 
     if(auto encopt = device.configValue<std::string>({}, "stereo-encoding"sv))
     {
-        if(is_eq(al::case_compare(*encopt, "basic"sv))
-            or is_eq(al::case_compare(*encopt, "panpot"sv)))
+        if(al::ci_equal(*encopt, "basic"sv) or al::ci_equal(*encopt, "panpot"sv))
             stereomode = StereoEncoding::Basic;
-        else if(is_eq(al::case_compare(*encopt, "uhj"sv)))
+        else if(al::ci_equal(*encopt, "uhj"sv))
             stereomode = StereoEncoding::Uhj;
-        else if(is_eq(al::case_compare(*encopt, "tsme"sv)))
+        else if(al::ci_equal(*encopt, "tsme"sv))
             stereomode = StereoEncoding::Tsme;
-        else if(is_eq(al::case_compare(*encopt, "hrtf"sv)))
+        else if(al::ci_equal(*encopt, "hrtf"sv))
             stereomode = StereoEncoding::Hrtf;
         else
             ERR("Unexpected stereo-encoding: {}", *encopt);
@@ -1341,11 +1369,11 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
                 break;
 
             case ATTRIBUTE(ALC_MONO_SOURCES)
-                numMono = al::saturate_cast<ALCuint>(attrvalue);
+                numMono = al::saturating_cast<ALCuint>(attrvalue);
                 break;
 
             case ATTRIBUTE(ALC_STEREO_SOURCES)
-                numStereo = al::saturate_cast<ALCuint>(attrvalue);
+                numStereo = al::saturating_cast<ALCuint>(attrvalue);
                 break;
 
             case ATTRIBUTE(ALC_MAX_AUXILIARY_SENDS)
@@ -1388,6 +1416,10 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
 
             case ATTRIBUTE(ALC_SYNC)
                 /* Ignored attribute */
+                break;
+
+            case ATTRIBUTE(ALC_AUXILIARY_EFFECT_SLOTS_SOFT)
+                numSlots = static_cast<ALCuint>(std::max<ALCint>(attrvalue, 0));
                 break;
 
             default:
@@ -1483,9 +1515,9 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
                 freqAttr = std::clamp<int>(freqAttr, MinOutputRate, MaxOutputRate);
 
                 const auto scale = gsl::narrow_cast<double>(freqAttr) / oldrate;
-                period_size = gsl::narrow_cast<ALCuint>(std::lround(period_size * scale));
-                buffer_size = gsl::narrow_cast<ALCuint>(std::lround(buffer_size * scale));
-                optsrate = gsl::narrow_cast<ALCuint>(freqAttr);
+                period_size = al::saturating_round<ALCuint>(period_size * scale);
+                buffer_size = al::saturating_round<ALCuint>(buffer_size * scale);
+                optsrate = gsl::narrow<ALCuint>(freqAttr);
             }
         }
 
@@ -1624,11 +1656,11 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
     {
         if(auto modeopt = device.configValue<std::string>({}, "stereo-mode"))
         {
-            if(is_eq(al::case_compare(*modeopt, "headphones"sv)))
+            if(al::ci_equal(*modeopt, "headphones"sv))
                 device.mFlags.set(DeviceFlag::DirectEar);
-            else if(is_eq(al::case_compare(*modeopt, "speakers"sv)))
+            else if(al::ci_equal(*modeopt, "speakers"sv))
                 device.mFlags.reset(DeviceFlag::DirectEar);
-            else if(is_neq(al::case_compare(*modeopt, "auto"sv)))
+            else if(al::ci_nequal(*modeopt, "auto"sv))
                 ERR("Unexpected stereo-mode: {}", *modeopt);
         }
     }
@@ -1654,9 +1686,15 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
     device.NumMonoSources = numMono;
     device.NumStereoSources = numStereo;
 
-    if(auto sendsopt = device.configValue<unsigned>({}, "sends"sv))
+    if(auto const sendsopt = device.configValue<unsigned>({}, "sends"sv))
         numSends = std::min(numSends, std::clamp(*sendsopt, 0u, unsigned{MaxSendCount}));
     device.NumAuxSends = numSends;
+
+    if(auto const slotsopt = device.configValue<unsigned>({}, "slots"sv);
+        slotsopt.value_or(0u) > 0)
+        numSlots = std::clamp(*slotsopt, 1u,
+            unsigned{std::numeric_limits<int>::max()});
+    device.AuxiliaryEffectSlotMax = numSlots;
 
     TRACE("Max sources: {} ({} + {}), effect slots: {}, sends: {}",
         device.SourcesMax, device.NumMonoSources, device.NumStereoSources,
@@ -1679,17 +1717,15 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
     case DevFmtAmbi3D: break;
     }
 
-    auto sample_delay = usize{
-        std::visit(overloaded {
-            [](std::monostate const&) { return 0_uz; },
-            [](AmbiDecPostProcess const&) { return 0_uz; },
-            [](HrtfPostProcess const&) { return 0_uz; },
-            [](UhjPostProcess const &pp) { return pp.mUhjEncoder->getDelay(); },
-            [](TsmePostProcess const &pp) { return pp.mTsmeEncoder->getDelay(); },
-            [](StablizerPostProcess const&) { return 0_uz; },
-            [](Bs2bPostProcess const&) { return 0_uz; },
-        }, device.mPostProcess)
-    };
+    auto sample_delay = std::visit(overloaded {
+        [](std::monostate const&) { return 0_uz; },
+        [](AmbiDecPostProcess const&) { return 0_uz; },
+        [](HrtfPostProcess const&) { return 0_uz; },
+        [](UhjPostProcess const &pp) { return pp.mUhjEncoder->getDelay(); },
+        [](TsmePostProcess const &pp) { return pp.mTsmeEncoder->getDelay(); },
+        [](StablizerPostProcess const&) { return 0_uz; },
+        [](Bs2bPostProcess const&) { return 0_uz; },
+    }, device.mPostProcess);
 
     if(device.getConfigValueBool({}, "dither"sv, true))
     {
@@ -1723,7 +1759,7 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
         TRACE("Dithering disabled");
     else
         TRACE("Dithering enabled ({}-bit, {:g})",
-            float2int(std::log2(device.DitherDepth)+0.5f)+1, device.DitherDepth);
+            al::saturating_round<int>(std::log2(device.DitherDepth))+1, device.DitherDepth);
 
     if(!optlimit)
         optlimit = device.configValue<bool>({}, "output-limiter");
@@ -1752,7 +1788,7 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
         TRACE("Output limiter disabled");
     else
     {
-        auto thrshld = 1.0_f32;
+        auto thrshld = 1.0f;
         switch(device.FmtType)
         {
         case DevFmtByte:
@@ -1771,7 +1807,7 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
         if(device.DitherDepth > 0.0f)
             thrshld -= 1.0f / device.DitherDepth;
 
-        const auto thrshld_dB = log10(thrshld) * 20.0f;
+        const auto thrshld_dB = std::log10(thrshld) * 20.0f;
         auto limiter = CreateDeviceLimiter(device, thrshld_dB);
 
         sample_delay += limiter->getLookAhead();
@@ -1780,8 +1816,8 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
     }
 
     /* Convert the sample delay from samples to nanosamples to nanoseconds. */
-    sample_delay = std::min(sample_delay, i32::max().as<usize>());
-    device.FixedLatency += nanoseconds{seconds{sample_delay.c_val}} / device.mSampleRate;
+    sample_delay = std::min(sample_delay, std::size_t{std::numeric_limits<std::int32_t>::max()});
+    device.FixedLatency += nanoseconds{seconds{sample_delay}} / device.mSampleRate;
     TRACE("Fixed device latency: {}ns", device.FixedLatency.count());
 
     auto mixer_mode = FPUCtl{};
@@ -1835,9 +1871,9 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
             auto usemask = ~sublist.mFreeMask;
             while(usemask != 0)
             {
-                const auto idx = usemask.countr_zero();
-                auto &slot = (*sublist.mEffectSlots)[idx.c_val];
-                usemask &= ~(1_u64 << idx);
+                const auto idx = as_unsigned(std::countr_zero(usemask));
+                auto &slot = (*sublist.mEffectSlots)[idx];
+                usemask &= ~(std::uint64_t{1} << idx);
 
                 const auto slotbase = slot.mSlot;
                 aluInitEffectPanning(slotbase, context);
@@ -1864,9 +1900,9 @@ auto UpdateDeviceParams(al::Device& device, std::span<AttributePair const> const
             auto usemask = ~sublist.mFreeMask;
             while(usemask != 0)
             {
-                const auto idx = usemask.countr_zero();
-                auto &source = (*sublist.mSources)[idx.c_val];
-                usemask &= ~(1_u64 << idx);
+                const auto idx = as_unsigned(std::countr_zero(usemask));
+                auto &source = (*sublist.mSources)[idx];
+                usemask &= ~(std::uint64_t{1} << idx);
 
                 const auto sendrange = source.mSend | std::views::drop(num_sends);
                 std::ranges::fill(sendrange, al::Source::SendData{.mSlot={}, .mGain=1.0f,
@@ -2267,6 +2303,7 @@ auto GetIntegerv(al::Device *const device, ALCenum const param, std::span<ALCint
         case ALC_AMBISONIC_SCALING_SOFT:
         case ALC_AMBISONIC_ORDER_SOFT:
         case ALC_MAX_AMBISONIC_ORDER_SOFT:
+        case ALC_AUXILIARY_EFFECT_SLOTS_SOFT:
             al::Device::SetGlobalError(ALC_INVALID_DEVICE);
             return 0;
 
@@ -2276,7 +2313,6 @@ auto GetIntegerv(al::Device *const device, ALCenum const param, std::span<ALCint
         return 0;
     }
 
-    auto statelock = std::lock_guard{device->StateLock};
     if(device->Type == DeviceType::Capture)
     {
         static constexpr auto MaxCaptureAttributes = 9;
@@ -2294,7 +2330,7 @@ auto GetIntegerv(al::Device *const device, ALCenum const param, std::span<ALCint
                 values[i++] = ALC_MINOR_VERSION;
                 values[i++] = alcMinorVersion;
                 values[i++] = ALC_CAPTURE_SAMPLES;
-                values[i++] = gsl::narrow_cast<int>(device->Backend->availableSamples());
+                values[i++] = al::saturating_cast<int>(device->Backend->availableSamples());
                 values[i++] = ALC_CONNECTED;
                 values[i++] = device->Connected.load(std::memory_order_relaxed);
                 values[i++] = 0;
@@ -2312,7 +2348,7 @@ auto GetIntegerv(al::Device *const device, ALCenum const param, std::span<ALCint
             return 1;
 
         case ALC_CAPTURE_SAMPLES:
-            values[0] = al::saturate_cast<ALCint>(device->Backend->availableSamples());
+            values[0] = al::saturating_cast<ALCint>(device->Backend->availableSamples());
             return 1;
 
         case ALC_CONNECTED:
@@ -2329,13 +2365,13 @@ auto GetIntegerv(al::Device *const device, ALCenum const param, std::span<ALCint
     auto NumAttrsForDevice = [device]
     {
         if(device->Type == DeviceType::Loopback && device->FmtChans == DevFmtAmbi3D)
-            return 37_u8;
-        return 31_u8;
+            return std::uint8_t{39};
+        return std::uint8_t{33};
     };
     switch(param)
     {
     case ALC_ATTRIBUTES_SIZE:
-        values[0] = NumAttrsForDevice().c_val;
+        values[0] = NumAttrsForDevice();
         return 1;
 
     case ALC_ALL_ATTRIBUTES:
@@ -2405,6 +2441,9 @@ auto GetIntegerv(al::Device *const device, ALCenum const param, std::span<ALCint
 
             values[i++] = ALC_OUTPUT_MODE_SOFT;
             values[i++] = al::to_underlying(device->getOutputMode1());
+
+            values[i++] = ALC_AUXILIARY_EFFECT_SLOTS_SOFT;
+            values[i++] = gsl::narrow_cast<ALCint>(device->AuxiliaryEffectSlotMax);
 
             values[i++] = 0;
             Ensures(i == NumAttrsForDevice());
@@ -2522,7 +2561,7 @@ auto GetIntegerv(al::Device *const device, ALCenum const param, std::span<ALCint
 
     case ALC_NUM_HRTF_SPECIFIERS_SOFT:
         device->enumerateHrtfs();
-        values[0] = al::saturate_cast<ALCint>(device->mHrtfList.size());
+        values[0] = al::saturating_cast<ALCint>(device->mHrtfList.size());
         return 1;
 
     case ALC_OUTPUT_LIMITER_SOFT:
@@ -2535,6 +2574,10 @@ auto GetIntegerv(al::Device *const device, ALCenum const param, std::span<ALCint
 
     case ALC_OUTPUT_MODE_SOFT:
         values[0] = al::to_underlying(device->getOutputMode1());
+        return 1;
+
+    case ALC_AUXILIARY_EFFECT_SLOTS_SOFT:
+        values[0] = gsl::narrow_cast<ALCint>(device->AuxiliaryEffectSlotMax);
         return 1;
 
     default:
@@ -2557,7 +2600,11 @@ try {
             al::Device::SetGlobalError(ALC_INVALID_VALUE);
     }
     else
+    {
+        auto const statelock = dev ? std::unique_lock{dev->StateLock}
+            : std::unique_lock<std::mutex>{};
         GetIntegerv(std::to_address(dev), param, std::views::counted(values, size));
+    }
 }
 catch(al::base_exception&) {
 }
@@ -2566,7 +2613,7 @@ DefineAlcAlias(alcGetIntegerv)
 ALC_API void ALC_APIENTRY alcGetInteger64vSOFT(ALCdevice *device, ALCenum pname, ALCsizei size,
     ALCint64SOFT *values) noexcept
 try {
-    auto dev = device ? VerifyDevice(device).get() : DeviceRef{};
+    auto const dev = device ? VerifyDevice(device).get() : DeviceRef{};
     if(size <= 0 || values == nullptr)
     {
         if(dev)
@@ -2575,11 +2622,13 @@ try {
             al::Device::SetGlobalError(ALC_INVALID_VALUE);
         return;
     }
+
+    auto const statelock = dev ? std::unique_lock{dev->StateLock} : std::unique_lock<std::mutex>{};
     const auto valuespan = std::views::counted(values, size);
     if(!dev || dev->Type == DeviceType::Capture)
     {
         auto ivals = std::vector<int>(valuespan.size());
-        if(const auto got = GetIntegerv(dev.get(), pname, ivals))
+        if(const auto got = GetIntegerv(std::to_address(dev), pname, ivals))
             std::ranges::copy(ivals | std::views::take(got), valuespan.begin());
         return;
     }
@@ -2587,14 +2636,13 @@ try {
     auto NumAttrsForDevice = [&dev]
     {
         if(dev->Type == DeviceType::Loopback && dev->FmtChans == DevFmtAmbi3D)
-            return 41_u8;
-        return 35_u8;
+            return std::uint8_t{43};
+        return std::uint8_t{37};
     };
-    auto statelock = std::lock_guard{dev->StateLock};
     switch(pname)
     {
     case ALC_ATTRIBUTES_SIZE:
-        valuespan[0] = ALCint64SOFT{NumAttrsForDevice().c_val};
+        valuespan[0] = ALCint64SOFT{NumAttrsForDevice()};
         break;
 
     case ALC_ALL_ATTRIBUTES:
@@ -2603,9 +2651,17 @@ try {
         else
         {
             auto i = 0_uz;
+            valuespan[i++] = ALC_MAJOR_VERSION;
+            valuespan[i++] = alcMajorVersion;
+            valuespan[i++] = ALC_MINOR_VERSION;
+            valuespan[i++] = alcMinorVersion;
+            valuespan[i++] = ALC_EFX_MAJOR_VERSION;
+            valuespan[i++] = alcEFXMajorVersion;
+            valuespan[i++] = ALC_EFX_MINOR_VERSION;
+            valuespan[i++] = alcEFXMinorVersion;
+
             valuespan[i++] = ALC_FREQUENCY;
             valuespan[i++] = dev->mSampleRate;
-
             if(dev->Type != DeviceType::Loopback)
             {
                 valuespan[i++] = ALC_REFRESH;
@@ -2653,6 +2709,12 @@ try {
             valuespan[i++] = ALC_OUTPUT_LIMITER_SOFT;
             valuespan[i++] = dev->Limiter ? ALC_TRUE : ALC_FALSE;
 
+            valuespan[i++] = ALC_MAX_AMBISONIC_ORDER_SOFT;
+            valuespan[i++] = MaxAmbiOrder;
+
+            valuespan[i++] = ALC_OUTPUT_MODE_SOFT;
+            valuespan[i++] = al::to_underlying(dev->getOutputMode1());
+
             const auto clock = GetClockLatency(dev.get(), dev->Backend.get());
             valuespan[i++] = ALC_DEVICE_CLOCK_SOFT;
             valuespan[i++] = clock.ClockTime.count();
@@ -2660,8 +2722,8 @@ try {
             valuespan[i++] = ALC_DEVICE_LATENCY_SOFT;
             valuespan[i++] = clock.Latency.count();
 
-            valuespan[i++] = ALC_OUTPUT_MODE_SOFT;
-            valuespan[i++] = al::to_underlying(dev->getOutputMode1());
+            valuespan[i++] = ALC_AUXILIARY_EFFECT_SLOTS_SOFT;
+            valuespan[i++] = dev->AuxiliaryEffectSlotMax;
 
             valuespan[i++] = 0;
             Ensures(i == NumAttrsForDevice());
@@ -2704,7 +2766,7 @@ try {
 
     default:
         auto ivals = std::vector<ALCint>(valuespan.size());
-        if(const auto got = GetIntegerv(dev.get(), pname, ivals))
+        if(const auto got = GetIntegerv(std::to_address(dev), pname, ivals))
             std::ranges::copy(ivals | std::views::take(got), valuespan.begin());
         break;
     }
@@ -2732,7 +2794,7 @@ try {
 
     const auto extlist = dev ? std::span{extarray}.subspan(0) : std::span{nodevextarray};
     const auto matchext = [tofind = std::string_view{extName}](const std::string_view entry)
-    { return tofind.size() == entry.size() and is_eq(al::case_compare(tofind, entry)); };
+    { return al::ci_equal(tofind, entry); };
     return std::ranges::any_of(extlist, matchext) ? ALC_TRUE : ALC_FALSE;
 }
 catch(al::base_exception&) {
@@ -3040,22 +3102,22 @@ try {
     if(!devname.empty())
     {
         TRACE("Opening playback device \"{}\"", devname);
-        if(is_eq(al::case_compare(devname, GetDefaultName()))
+        if(al::ci_equal(devname, GetDefaultName())
 #ifdef _WIN32
             /* Some old Windows apps hardcode these expecting OpenAL to use a
              * specific audio API, even when they're not enumerated. Creative's
              * router effectively ignores them too.
              */
-            or is_eq(al::case_compare(devname, "DirectSound3D"sv))
-            or is_eq(al::case_compare(devname, "DirectSound"sv))
-            or is_eq(al::case_compare(devname, "MMSYSTEM"sv))
+            or al::ci_equal(devname, "DirectSound3D"sv)
+            or al::ci_equal(devname, "DirectSound"sv)
+            or al::ci_equal(devname, "MMSYSTEM"sv)
 #endif
             /* Some old Linux apps hardcode configuration strings that were
              * supported by the OpenAL SI. We can't really do anything useful
              * with them, so just ignore.
              */
             or devname.starts_with("'("sv)
-            or is_eq(al::case_compare(devname, "openal-soft"sv)))
+            or al::ci_equal(devname, "openal-soft"sv))
             devname = {};
         else
         {
@@ -3226,8 +3288,7 @@ try {
     if(!devname.empty())
     {
         TRACE("Opening capture device \"{}\"", devname);
-        if(is_eq(al::case_compare(devname, GetDefaultName()))
-            or is_eq(al::case_compare(devname, "openal-soft"sv)))
+        if(al::ci_equal(devname, GetDefaultName()) or al::ci_equal(devname, "openal-soft"sv))
             devname = {};
         else
         {
@@ -3402,7 +3463,7 @@ try {
     auto statelock = std::lock_guard{dev->StateLock};
     auto *backend = dev->Backend.get();
 
-    const auto usamples = gsl::narrow_cast<ALCuint>(samples);
+    const auto usamples = gsl::narrow<std::size_t>(samples);
     if(usamples > backend->availableSamples())
     {
         dev->setError(ALC_INVALID_VALUE);
@@ -3410,7 +3471,7 @@ try {
     }
 
     backend->captureSamples(std::span{static_cast<std::byte*>(buffer),
-        std::size_t{usamples}*dev->frameSizeFromFmt()});
+        usamples*dev->frameSizeFromFmt()});
 }
 catch(al::base_exception&) {
 }
@@ -3701,7 +3762,7 @@ try {
     auto devname = std::string_view{deviceName ? deviceName : ""};
     if(!devname.empty())
     {
-        if(is_eq(al::case_compare(devname, GetDefaultName())))
+        if(al::ci_equal(devname, GetDefaultName()))
             devname = {};
         else
         {

@@ -2,15 +2,13 @@
 #include "config.h"
 
 #include <cstdint>
-#include <iostream>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
 
-#include "alnumeric.h"
-#include "strutils.hpp"
-
+#include "envutils.hpp"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -20,18 +18,23 @@
 
 #if HAVE_CXXMODULES
 import alstring;
+import common.std;
 import filesystem;
 import fmtlib;
 import format;
 import logging;
+import numeric;
 import zstring_view;
 #else
+#include <iostream>
 #include "alformat.hpp"
+#include "alformatpath.hpp"
 #include "alformatzsv.hpp"
 #include "alstring.h"
 #include "filesystem.h"
 #include "fmt/std.h"
 #include "logging.h"
+#include "numeric.hpp"
 #include "zstring_view.hpp"
 #endif
 
@@ -81,7 +84,7 @@ void al_open_logfile(fs::path const &fname)
 {
     gLogFile.open(fname);
     if(!gLogFile.is_open())
-        ERR("Failed to open log file '{}'", al::u8_as_char(fname.u8string()));
+        ERR("Failed to open log file '{}'", fname);
 }
 
 void al_set_log_callback(LogCallbackFunc const callback, void *const userptr)
@@ -153,7 +156,7 @@ try {
         {
             if(gLogCallback)
                 gLogCallback(gLogCallbackPtr, *logcode, msg.c_str(),
-                    al::saturate_cast<int>(msg.size()));
+                    al::saturating_cast<int>(msg.size()));
             else if(gLogState == LogState::FirstRun)
                 gLogState = LogState::Disable;
         }

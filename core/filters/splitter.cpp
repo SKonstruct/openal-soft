@@ -8,8 +8,14 @@
 #include <limits>
 #include <numbers>
 
-#include "alnumeric.h"
+#if HAVE_CXXMODULES
+import gsl;
+import numeric;
+#include "gsl_macros.hpp"
+#else
 #include "gsl/gsl"
+#include "numeric.hpp"
+#endif
 
 
 void BandSplitter::init(float const f0norm) noexcept NONBLOCKING

@@ -25,6 +25,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <optional>
@@ -32,22 +33,14 @@
 #include <string>
 #include <utility>
 
-#include "AL/al.h"
-#include "AL/alc.h"
-#include "AL/alext.h"
-
-#include "al/debug.h"
-#include "al/listener.h"
 #include "alc/alu.h"
 #include "alc/inprogext.h"
-#include "alnumeric.h"
 #include "atomic.h"
 #include "core/mixer/defs.h"
-#include "core/voice.h"
 #include "direct_defs.h"
+#include "envutils.hpp"
 #include "intrusive_ptr.h"
 #include "opthelpers.h"
-#include "strutils.hpp"
 #include "zudl.hpp"
 
 #if ALSOFT_EAX
@@ -56,17 +49,30 @@
 #endif // ALSOFT_EAX
 
 #if HAVE_CXXMODULES
+import openal;
+
+import al.iface;
 import alc.context;
 import alc.device;
+import core.voice;
 import format;
 import gsl;
 import logging;
+import numeric;
 #else
+#include "AL/al.h"
+#include "AL/alc.h"
+#include "AL/alext.h"
+
+#include "al/debug.h"
+#include "al/listener.h"
 #include "alc/context.hpp"
 #include "alc/device.h"
 #include "alformat.hpp"
 #include "core/logging.h"
+#include "core/voice.h"
 #include "gsl/gsl"
+#include "numeric.hpp"
 #endif
 
 
@@ -102,7 +108,11 @@ auto GetResamplerName() noexcept -> const ALchar*
     else if constexpr(rtype == Resampler::BSinc24) return "23rd order Sinc";
     else if constexpr(rtype == Resampler::FastBSinc48) return "47th order Sinc (fast)";
     else if constexpr(rtype == Resampler::BSinc48) return "47th order Sinc";
-    else ASSUME(false);
+    else
+    {
+        static_assert(al::dependent_false_v<rtype>, "Invalid resampler type");
+        return "";
+    }
 }
 
 [[nodiscard]] constexpr
@@ -191,24 +201,14 @@ template<typename T>
 struct PropertyCastType {
     template<typename U> [[nodiscard]]
     constexpr auto operator()(U&& value) const noexcept -> T
-    {
-        if constexpr(al::strict_number<std::remove_cvref_t<U>>)
-            return gsl::narrow_cast<T>(std::forward<U>(value).c_val);
-        else
-            return gsl::narrow_cast<T>(std::forward<U>(value));
-    }
+    { return gsl::narrow_cast<T>(std::forward<U>(value)); }
 };
 /* Special-case ALboolean to be an actual bool instead of a char type. */
 template<>
 struct PropertyCastType<ALboolean> {
     template<typename U> [[nodiscard]]
     constexpr auto operator()(U&& value) const noexcept -> ALboolean
-    {
-        if constexpr(al::strict_number<std::remove_cvref_t<U>>)
-            return gsl::narrow_cast<bool>(std::forward<U>(value).c_val) ? AL_TRUE : AL_FALSE;
-        else
-            return gsl::narrow_cast<bool>(std::forward<U>(value)) ? AL_TRUE : AL_FALSE;
-    }
+    { return gsl::narrow_cast<bool>(std::forward<U>(value)) ? AL_TRUE : AL_FALSE; }
 };
 
 

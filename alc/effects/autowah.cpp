@@ -30,7 +30,6 @@
 #include <variant>
 
 #include "alc/effects/base.h"
-#include "alnumeric.h"
 #include "core/ambidefs.h"
 #include "core/bufferline.h"
 #include "core/effects/base.h"
@@ -41,9 +40,11 @@
 #if HAVE_CXXMODULES
 import core.context;
 import core.device;
+import numeric;
 #else
 #include "core/context.h"
 #include "core/device.h"
+#include "numeric.hpp"
 #endif
 
 struct BufferStorage;
@@ -152,7 +153,7 @@ void AutowahState::process(const size_t samplesToDo,
          */
         const auto sample = peak_gain * std::fabs(x);
         const auto a = (sample > env_delay) ? attack_rate : release_rate;
-        env_delay = lerpf(sample, env_delay, a);
+        env_delay = al::lerp(sample, env_delay, a);
 
         /* Calculate the cos and alpha components for this sample's filter. */
         const auto w0 = std::min(bandwidth*env_delay + freq_min, 0.46f) *
@@ -214,8 +215,8 @@ struct AutowahStateFactory final : public EffectStateFactory {
 
 } // namespace
 
-auto AutowahStateFactory_getFactory() -> gsl::not_null<EffectStateFactory*>
+auto AutowahStateFactory_getFactory() -> EffectStateFactory&
 {
-    static AutowahStateFactory AutowahFactory{};
-    return gsl::make_not_null(&AutowahFactory);
+    static auto AutowahFactory = AutowahStateFactory{};
+    return AutowahFactory;
 }

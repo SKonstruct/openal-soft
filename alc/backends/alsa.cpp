@@ -38,12 +38,9 @@
 #include <vector>
 
 #include "alc/alconfig.h"
-#include "alnumeric.h"
 #include "althrd_setname.h"
 #include "dlopennote.h"
 #include "dynload.h"
-#include "inout_ptr.hpp"
-#include "ringbuffer.h"
 
 #include <alsa/asoundlib.h>
 
@@ -53,7 +50,10 @@ import core.device;
 import core.helpers;
 import format;
 import gsl;
+import inout_ptr;
 import logging;
+import numeric;
+import ringbuffer;
 import zstring_view;
 #else
 #include "alc/backends/exception.hpp"
@@ -63,6 +63,9 @@ import zstring_view;
 #include "core/helpers.hpp"
 #include "core/logging.h"
 #include "gsl/gsl"
+#include "inout_ptr.hpp"
+#include "numeric.hpp"
+#include "ringbuffer.hpp"
 #endif
 
 
@@ -997,9 +1000,9 @@ void AlsaCapture::stop()
         /* The ring buffer implicitly captures when checking availability.
          * Direct access needs to explicitly capture it into temp storage.
          */
-        auto const savail = al::saturate_cast<snd_pcm_sframes_t>(avail);
+        auto const savail = al::saturating_cast<snd_pcm_sframes_t>(avail);
         auto const numbytes = snd_pcm_frames_to_bytes(mPcmHandle, savail);
-        auto temp = std::vector<std::byte>(al::saturate_cast<std::size_t>(numbytes));
+        auto temp = std::vector<std::byte>(al::saturating_cast<std::size_t>(numbytes));
         captureSamples(temp);
         mBuffer = std::move(temp);
     }

@@ -23,16 +23,19 @@
 #include <algorithm>
 #include <string_view>
 
+#include "direct_defs.h"
+
+#if HAVE_CXXMODULES
+import openal;
+#include "openal_apientry.h"
+
+import alc.context;
+import alstring;
+#else
 #include "AL/al.h"
 #include "AL/alc.h"
 #include "AL/alext.h"
 
-#include "direct_defs.h"
-
-#if HAVE_CXXMODULES
-import alc.context;
-import alstring;
-#else
 #include "alc/context.hpp"
 #include "alstring.h"
 #endif
@@ -50,7 +53,7 @@ auto alIsExtensionPresent_(al::Context& context, const ALchar *extName) noexcept
 
     const auto tofind = std::string_view{extName};
     const auto found = std::ranges::any_of(context.mExtensions, [tofind](std::string_view ext)
-    { return tofind.size() == ext.size() && is_eq(al::case_compare(ext, tofind)); });
+    { return al::ci_equal(ext, tofind); });
     return found ? AL_TRUE : AL_FALSE;
 }
 

@@ -5,12 +5,14 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <ranges>
 #include <span>
 
 #include "ambidefs.h"
 #include "bufferline.h"
 #include "devformat.h"
+#include "zudl.hpp"
 
 
 inline constexpr auto InvalidChannelIndex = static_cast<std::uint8_t>(~0u);

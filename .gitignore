@@ -14,3 +14,7 @@ CMakeLists.txt.user*
 
 __pycache__/
 /fmt-11.2.0
+
+## vscode
+/.vscode
+*.code-workspace

@@ -20,30 +20,34 @@
 
 #include "config.h"
 
-#include "listener.h"
-
 #include <algorithm>
 #include <cmath>
 #include <mutex>
 #include <ranges>
 #include <span>
 
-#include "AL/al.h"
-#include "AL/alext.h"
-
-#include "alnumeric.h"
 #include "core/except.h"
 #include "direct_defs.h"
 #include "zudl.hpp"
 
 #if HAVE_CXXMODULES
+import openal;
+#include "openal_apientry.h"
+
+import al.iface;
 import alc.context;
 import gsl;
 import logging;
+import numeric;
 #else
+#include "AL/al.h"
+#include "AL/alext.h"
+
+#include "al/listener.h"
 #include "alc/context.hpp"
 #include "core/logging.h"
 #include "gsl/gsl"
+#include "numeric.hpp"
 #endif
 
 

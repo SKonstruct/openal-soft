@@ -36,9 +36,7 @@
 #include <unistd.h>
 #include <vector>
 
-#include "alnumeric.h"
 #include "core/converter.h"
-#include "ringbuffer.h"
 #include "zudl.hpp"
 
 #include <AudioUnit/AudioUnit.h>
@@ -58,6 +56,8 @@ import core.device;
 import format;
 import gsl;
 import logging;
+import numeric;
+import ringbuffer;
 #else
 #include "alc/backends/exception.hpp"
 #include "alformat.hpp"
@@ -65,6 +65,8 @@ import logging;
 #include "core/device.h"
 #include "core/logging.h"
 #include "gsl/gsl"
+#include "numeric.hpp"
+#include "ringbuffer.hpp"
 #endif
 
 namespace {

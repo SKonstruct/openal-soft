@@ -23,13 +23,9 @@
 #endif
 
 #include "alcomplex.h"
-#include "alnumeric.h"
 #include "base.h"
-#include "core/ambidefs.h"
 #include "core/bufferline.h"
-#include "core/buffer_storage.h"
 #include "core/effects/base.h"
-#include "core/effectslot.h"
 #include "core/filters/splitter.h"
 #include "core/fmt_traits.h"
 #include "core/mixer.h"
@@ -42,13 +38,22 @@
 #include "zudl.hpp"
 
 #if HAVE_CXXMODULES
+import core.ambi_utils;
+import core.buffer_storage;
 import core.context;
 import core.device;
+import core.effectslot;
 import gsl;
+import numeric;
+#include "gsl_macros.hpp"
 #else
+#include "core/ambi_utils.hpp"
+#include "core/buffer_storage.h"
 #include "core/context.h"
 #include "core/device.h"
+#include "core/effectslot.h"
 #include "gsl/gsl"
+#include "numeric.hpp"
 #endif
 
 
@@ -730,8 +735,8 @@ struct ConvolutionStateFactory final : public EffectStateFactory {
 
 } // namespace
 
-auto ConvolutionStateFactory_getFactory() -> gsl::not_null<EffectStateFactory*>
+auto ConvolutionStateFactory_getFactory() -> EffectStateFactory&
 {
-    static ConvolutionStateFactory ConvolutionFactory{};
-    return gsl::make_not_null(&ConvolutionFactory);
+    static auto ConvolutionFactory = ConvolutionStateFactory{};
+    return ConvolutionFactory;
 }

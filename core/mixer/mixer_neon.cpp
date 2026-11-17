@@ -9,7 +9,6 @@
 #include <span>
 #include <variant>
 
-#include "alnumeric.h"
 #include "core/bsinc_defs.h"
 #include "core/bufferline.h"
 #include "core/cubic_defs.h"
@@ -17,12 +16,14 @@
 #include "core/resampler_limits.hpp"
 #include "defs.h"
 #include "hrtfbase.h"
-#include "opthelpers.h"
+#include "opthelper_macros.hpp"
 
 #if HAVE_CXXMODULES
 import gsl;
+import numeric;
 #else
 #include "gsl/gsl"
+#include "numeric.hpp"
 #endif
 
 
@@ -234,7 +235,7 @@ void Resample_Linear_NEON(InterpState const*, std::span<float const> const src, 
 
         std::ranges::generate(dst.last(todo), [&pos,&frac,src,increment]
         {
-            auto const output = lerpf(src[pos+0], src[pos+1],
+            auto const output = al::lerp(src[pos+0], src[pos+1],
                 gsl::narrow_cast<float>(frac) * (1.0f/MixerFracOne));
 
             frac += increment;

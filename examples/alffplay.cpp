@@ -31,8 +31,6 @@
 #include <variant>
 #include <vector>
 
-#include "alnumeric.h"
-#include "inout_ptr.hpp"
 #include "opthelpers.h"
 #include "pragmadefs.h"
 #include "zudl.hpp"
@@ -70,15 +68,13 @@ import alhelpers;
 import alstring;
 import fmtlib;
 import gsl;
+import inout_ptr;
+import numeric;
 import openal;
 import zstring_view;
 
 /* AL_APIENTRY is needed, but not exported from the module. */
-#ifdef _WIN32
- #define AL_APIENTRY __cdecl
-#else
- #define AL_APIENTRY
-#endif
+#include "openal_apientry.h"
 
 #else
 
@@ -92,6 +88,8 @@ import zstring_view;
 #include "fmt/base.h"
 #include "fmt/ostream.h"
 #include "gsl/gsl"
+#include "inout_ptr.hpp"
+#include "numeric.hpp"
 #endif
 
 
@@ -959,7 +957,7 @@ auto AudioState::bufferCallback(const std::span<ALubyte> data) noexcept -> ALsiz
         | std::views::take(n1), data.begin()).out;
     std::ranges::copy(mBufferData | std::views::take(n2), outiter);
     mReadCount.store(r+n1+n2, std::memory_order_release);
-    return al::saturate_cast<ALsizei>(to_read);
+    return al::saturating_cast<ALsizei>(to_read);
 }
 
 void AudioState::handler()
@@ -1773,9 +1771,9 @@ void VideoState::updateVideo(SDL_Window *screen, SDL_Renderer *renderer, bool re
             {
                 const auto aspect_ratio = av_q2d(frame->sample_aspect_ratio);
                 if(aspect_ratio >= 1.0)
-                    frame_width = gsl::narrow_cast<int>(std::lround(frame_width * aspect_ratio));
+                    frame_width = al::saturating_round<int>(frame_width * aspect_ratio);
                 else if(aspect_ratio > 0.0)
-                    frame_height = gsl::narrow_cast<int>(std::lround(frame_height / aspect_ratio));
+                    frame_height = al::saturating_round<int>(frame_height / aspect_ratio);
             }
             if(SDL_SetWindowSize(screen, frame_width, frame_height))
             {
@@ -2125,28 +2123,31 @@ void MovieState::stop()
 
 
 // Helper method to print the time with human-readable formatting.
-auto PrettyTime(seconds t) -> std::string
+[[nodiscard]]
+auto PrettyTime(seconds t, seconds const total) -> std::string
 {
     using std::chrono::minutes;
     using std::chrono::hours;
 
     if(t.count() < 0)
-        return "0s";
+        t = seconds::zero();
 
     // Only handle up to hour formatting
-    if(t >= hours{1})
+    if(total >= hours{1})
         return fmt::format("{}h{:02}m{:02}s", duration_cast<hours>(t).count(),
             duration_cast<minutes>(t).count()%60, t.count()%60);
-    return fmt::format("{}m{:02}s", duration_cast<minutes>(t).count(), t.count()%60);
+    if(total >= minutes{10})
+        return fmt::format("{:2}m{:02}s", duration_cast<minutes>(t).count(), t.count()%60);
+    if(total >= minutes{1})
+        return fmt::format("{}m{:02}s", duration_cast<minutes>(t).count(), t.count()%60);
+    return fmt::format("{:02}s", t.count());
 }
 
 
 struct Application {
     std::span<al::zstring_view> mArgs{};
 
-    using ALMgrHandle = std::invoke_result_t<decltype(InitAL), std::span<al::zstring_view>&,
-        ALCint const*>;
-    std::optional<ALMgrHandle> mALManager{};
+    std::optional<decltype(InitAL(mArgs))> mALManager{};
 
     SDL_Window *mWindow{};
     SDL_Renderer *mRenderer{};
@@ -2331,10 +2332,10 @@ auto main(std::span<al::zstring_view> args) -> int
                     return std::numeric_limits<float>::quiet_NaN();
                 });
                 if(optarg.starts_with('+') || optarg.starts_with('-')
-                    || is_eq(al::case_compare(optarg.substr(endpos), "db")))
+                    || al::ci_equal(optarg.substr(endpos), "db"))
                 {
                     if(!std::isfinite(gainval) || (endpos != optarg.size()
-                            && is_neq(al::case_compare(optarg.substr(endpos), "db"))))
+                            && al::ci_nequal(optarg.substr(endpos), "db")))
                         fmt::println(std::cerr, "Invalid dB gain value: {}", optarg);
                     else
                         PlaybackGain = std::pow(10.0f, gainval/20.0f);
@@ -2368,7 +2369,7 @@ auto main(std::span<al::zstring_view> args) -> int
                 });
                 if(!(stretchval > 0.0f) || endpos != optarg.size())
                     fmt::println(std::cerr, "Invalid tstretch value: {}", optarg);
-                else if(!alcIsExtensionPresent(app.mALManager->mDevice, "ALC_EXT_EFX"))
+                else if(!alcIsExtensionPresent(app.mALManager->device(), "ALC_EXT_EFX"))
                     fmt::println(std::cerr, "EFX not supported for time stretching");
                 else
                     TimeStretchFactor = stretchval;
@@ -2395,7 +2396,7 @@ auto main(std::span<al::zstring_view> args) -> int
                 auto const pitchtune = std::pow(2.0f, tuneval / 12.0f);
                 if(!std::isfinite(pitchtune) || endpos != optarg.size())
                     fmt::println(std::cerr, "Invalid tune value: {}", optarg);
-                else if(!alcIsExtensionPresent(app.mALManager->mDevice, "ALC_EXT_EFX"))
+                else if(!alcIsExtensionPresent(app.mALManager->device(), "ALC_EXT_EFX"))
                     fmt::println(std::cerr, "EFX not supported for pitch tuning");
                 else
                     PitchTuneFactor = pitchtune;
@@ -2433,7 +2434,7 @@ auto main(std::span<al::zstring_view> args) -> int
             }
             else
             {
-                auto const tune = static_cast<int>(std::lround(std::log2(pitch) * 1200.0f));
+                auto const tune = al::saturating_round<int>(std::log2(pitch) * 1200.0f);
                 auto const [course_tune, fine_tune] = std::invoke([tune]() -> std::pair<int, int>
                 {
                     auto const course = tune / 100;
@@ -2486,7 +2487,8 @@ auto main(std::span<al::zstring_view> args) -> int
         if(cur_time != app.mLastTime)
         {
             const auto end_time = duration_cast<seconds>(app.mMovieState->getDuration());
-            fmt::print("    \r {} / {}", PrettyTime(cur_time), PrettyTime(end_time));
+            fmt::print("    \r {} / {}", PrettyTime(cur_time, end_time),
+                PrettyTime(end_time, end_time));
             std::cout.flush();
             app.mLastTime = cur_time;
         }

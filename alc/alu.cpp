@@ -26,8 +26,10 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <iterator>
@@ -41,18 +43,14 @@
 #include <utility>
 #include <variant>
 
-#include "alnumeric.h"
 #include "atomic.h"
-#include "core/ambidefs.h"
 #include "core/async_event.h"
 #include "core/bformatdec.h"
 #include "core/bs2b.h"
 #include "core/bsinc_defs.h"
 #include "core/bufferline.h"
-#include "core/buffer_storage.h"
 #include "core/cpu_caps.h"
 #include "core/effects/base.h"
-#include "core/effectslot.h"
 #include "core/filters/biquad.h"
 #include "core/filters/nfc.h"
 #include "core/fpu_ctrl.h"
@@ -61,17 +59,15 @@
 #include "core/mixer.h"
 #include "core/mixer/defs.h"
 #include "core/mixer/hrtfdefs.h"
+#include "core/mixparams.hpp"
 #include "core/resampler_limits.hpp"
 #include "core/storage_formats.h"
 #include "core/uhjfilter.h"
-#include "core/voice.h"
 #include "core/voice_change.h"
 #include "core/front_stablizer.h"
-#include "gsl/gsl"
+#include "envutils.hpp"
 #include "intrusive_ptr.h"
 #include "opthelpers.h"
-#include "ringbuffer.h"
-#include "strutils.hpp"
 #include "vecmat.h"
 #include "zudl.hpp"
 
@@ -79,21 +75,34 @@
 import alstring;
 import bsinc_tables;
 import cemath;
+import core.ambi_utils;
+import core.buffer_storage;
 import core.context;
 import core.device;
+import core.effectslot;
+import core.voice;
 import cubic_tables;
 import format;
-import types;
+import gsl;
+import hrtfstore;
+import numeric;
+#include "gsl_macros.hpp"
 #else
 #include "alformat.hpp"
 #include "alstring.h"
-#include "altypes.hpp"
 #include "cemath.hpp"
+#include "core/ambi_utils.hpp"
 #include "core/bsinc_tables.hpp"
 #include "core/context.h"
 #include "core/cubic_tables.hpp"
+#include "core/buffer_storage.h"
 #include "core/device.h"
 #include "core/devfmttraits.hpp"
+#include "core/effectslot.h"
+#include "core/hrtfstore.hpp"
+#include "core/voice.h"
+#include "gsl/gsl"
+#include "numeric.hpp"
 #endif
 
 
@@ -110,8 +119,7 @@ auto InitConeScale() noexcept -> float
     auto ret = 1.0f;
     if(auto const optval = al::getenv("__ALSOFT_HALF_ANGLE_CONES"))
     {
-        if(is_eq(al::case_compare(*optval, "true"sv))
-            or strtol(optval->c_str(), nullptr, 0) == 1)
+        if(al::ci_equal(*optval, "true"sv) or strtol(optval->c_str(), nullptr, 0) == 1)
             ret *= 0.5f;
     }
     return ret;
@@ -164,7 +172,7 @@ void BsincPrepare(unsigned const increment, BsincState *const state, BSincTable 
         sf = float{MixerFracOne}/static_cast<float>(increment) - table->scaleBase;
         sf = std::max(0.0f, float{BSincScaleCount}*sf*table->scaleRange - 1.0f);
 
-        si = float2uint(sf);
+        si = al::saturating_cast<std::size_t>(sf);
         sf -= static_cast<float>(si);
         /* The interpolation factor is fit to this diagonally-symmetric curve
          * to reduce the transition ripple caused by interpolating different
@@ -808,32 +816,33 @@ auto constexpr RotatorCoeffArray = RotatorCoeffs{};
 
 namespace rotator {
 
+    using ssize_t = std::make_signed_t<std::size_t>;
     [[nodiscard]] constexpr
-    auto P(isize const i, isize const l, isize const a, isize const n, usize const last_base,
-        AmbiRotateMatrix const &R) noexcept -> float
+    auto P(ssize_t const i, ssize_t const l, ssize_t const a, ssize_t const n,
+        std::size_t const last_base, AmbiRotateMatrix const &R) noexcept -> float
     {
-        auto const ip2 = (i+2).reinterpret_as<usize>().c_val;
+        auto const ip2 = as_unsigned(i+2);
         auto const ri1 =  R[ 1+2][ip2];
         auto const rim1 = R[-1+2][ip2];
         auto const ri0 =  R[ 0+2][ip2];
 
-        auto const lm1 = (l-1).reinterpret_as<usize>().c_val;
-        auto const x = (last_base + lm1 + a.reinterpret_as<usize>()).c_val;
+        auto const lm1 = as_unsigned(l-1);
+        auto const x = last_base + lm1 + as_unsigned(a);
         if(n == -l)
-            return ri1*R[last_base.c_val][x] + rim1*R[last_base.c_val + lm1*2][x];
+            return ri1*R[last_base][x] + rim1*R[last_base + lm1*2][x];
         if(n == l)
-            return ri1*R[last_base.c_val + lm1*2][x] - rim1*R[last_base.c_val][x];
-        return ri0*R[(last_base + lm1 + n.reinterpret_as<usize>()).c_val][x];
+            return ri1*R[last_base + lm1*2][x] - rim1*R[last_base][x];
+        return ri0*R[last_base + lm1 + as_unsigned(n)][x];
     }
 
     [[nodiscard]] constexpr
-    auto U(isize const l, isize const m, isize const n, usize const last_base,
+    auto U(ssize_t const l, ssize_t const m, ssize_t const n, std::size_t const last_base,
         AmbiRotateMatrix const &R) noexcept -> float
     {
         return P(0, l, m, n, last_base, R);
     }
     [[nodiscard]] constexpr
-    auto V(isize const l, isize const m, isize const n, usize const last_base,
+    auto V(ssize_t const l, ssize_t const m, ssize_t const n, std::size_t const last_base,
         AmbiRotateMatrix const &R) noexcept -> float
     {
         using namespace std::numbers;
@@ -850,7 +859,7 @@ namespace rotator {
         return d ? p1*sqrt2_v<float> : (p0 + p1);
     }
     [[nodiscard]] constexpr
-    auto W(isize const l, isize const m, isize const n, usize const last_base,
+    auto W(ssize_t const l, ssize_t const m, ssize_t const n, std::size_t const last_base,
         AmbiRotateMatrix const &R) noexcept -> float
     {
         Expects(m != 0);
@@ -881,7 +890,7 @@ void AmbiRotator(AmbiRotateMatrix &matrix, int const order) noexcept NONBLOCKING
     auto coeffs = RotatorCoeffArray.cbegin();
     auto base_idx = 4_uz;
     auto last_base = 1_uz;
-    for(auto const l : std::views::iota(2_isize, isize{order}+1))
+    for(auto const l : std::views::iota(2_z, order+1))
     {
         auto y = base_idx;
         for(auto const n : std::views::iota(-l, l+1))
@@ -906,7 +915,7 @@ void AmbiRotator(AmbiRotateMatrix &matrix, int const order) noexcept NONBLOCKING
             ++y;
         }
         last_base = base_idx;
-        base_idx += (l*2 + 1).reinterpret_as<usize>().c_val;
+        base_idx += as_unsigned(l*2 + 1);
     }
 }
 /* End ambisonic rotation helpers. */
@@ -1262,9 +1271,9 @@ void CalcHrtfPanning(Voice *const voice, float const xpos, float const ypos, flo
              */
             auto const a = 1.0f - (std::numbers::inv_pi_v<float>*0.5f)*spread;
             auto pos = std::array{
-                lerpf(chans[c].pos[0], xpos, a),
-                lerpf(chans[c].pos[1], ypos, a),
-                lerpf(chans[c].pos[2], zpos, a)};
+                std::lerp(chans[c].pos[0], xpos, a),
+                std::lerp(chans[c].pos[1], ypos, a),
+                std::lerp(chans[c].pos[2], zpos, a)};
             if(auto const len = std::sqrt(pos[0]*pos[0] + pos[1]*pos[1] + pos[2]*pos[2]);
                 len < 1.0f)
             {
@@ -1408,9 +1417,9 @@ void CalcNormalPanning(Voice *const voice, float const xpos, float const ypos, f
              */
             auto const a = 1.0f - (std::numbers::inv_pi_v<float>*0.5f)*spread;
             auto pos = std::array{
-                lerpf(chans[c].pos[0], xpos, a),
-                lerpf(chans[c].pos[1], ypos, a),
-                lerpf(chans[c].pos[2], zpos, a)};
+                std::lerp(chans[c].pos[0], xpos, a),
+                std::lerp(chans[c].pos[1], ypos, a),
+                std::lerp(chans[c].pos[2], zpos, a)};
             if(auto const len = std::sqrt(pos[0]*pos[0] + pos[1]*pos[1] + pos[2]*pos[2]);
                 len < 1.0f)
             {
@@ -1705,7 +1714,7 @@ void CalcNonAttnVoiceParams(Voice *const voice, ContextBase const *const context
     if(pitch > float{MaxPitch})
         voice->mStep = MaxPitch<<MixerFracBits;
     else
-        voice->mStep = std::max(fastf2u(pitch * MixerFracOne), 1u);
+        voice->mStep = std::max(al::saturating_round<unsigned>(pitch * MixerFracOne), 1u);
     voice->mResampler = PrepareResampler(props.mResampler, voice->mStep, &voice->mResampleState);
 
     /* Calculate gains */
@@ -1820,7 +1829,7 @@ void CalcAttnVoiceParams(Voice *const voice, ContextBase const *const context) n
     case DistanceModel::InverseClamped:
         if(props.RefDistance > 0.0f)
         {
-            if(auto const dist = lerpf(props.RefDistance, attenDistance, props.RolloffFactor);
+            if(auto const dist = std::lerp(props.RefDistance, attenDistance, props.RolloffFactor);
                 dist > 0.0f)
             {
                 dryAttnBase = props.RefDistance / dist;
@@ -1831,7 +1840,7 @@ void CalcAttnVoiceParams(Voice *const voice, ContextBase const *const context) n
             std::ranges::transform(wetbase | std::views::take(numsends), roomrolloff,
                 wetbase.begin(), [&props,attenDistance](float const gain, float const rolloff)
             {
-                if(auto const dist = lerpf(props.RefDistance, attenDistance, rolloff);
+                if(auto const dist = std::lerp(props.RefDistance, attenDistance, rolloff);
                     dist > 0.0f)
                     return gain * (props.RefDistance / dist);
                 return gain;
@@ -1891,8 +1900,8 @@ void CalcAttnVoiceParams(Voice *const voice, ContextBase const *const context) n
         else if(angle >= props.InnerAngle)
         {
             const auto scale = (angle-props.InnerAngle) / (props.OuterAngle-props.InnerAngle);
-            conegain = lerpf(1.0f, props.OuterGain, scale);
-            conehf = lerpf(1.0f, props.OuterGainHF, scale);
+            conegain = std::lerp(1.0f, props.OuterGain, scale);
+            conehf = std::lerp(1.0f, props.OuterGainHF, scale);
         }
 
         drygain.Base *= conegain;
@@ -2019,7 +2028,7 @@ void CalcAttnVoiceParams(Voice *const voice, ContextBase const *const context) n
     if(pitch > float{MaxPitch})
         voice->mStep = MaxPitch<<MixerFracBits;
     else
-        voice->mStep = std::max(fastf2u(pitch * MixerFracOne), 1u);
+        voice->mStep = std::max(al::saturating_round<unsigned>(pitch * MixerFracOne), 1u);
     voice->mResampler = PrepareResampler(props.mResampler, voice->mStep, &voice->mResampleState);
 
     auto spread = 0.0f;
@@ -2358,31 +2367,21 @@ void ApplyDither(std::span<FloatBufferLine> const Samples, unsigned *const dithe
 template<typename T> [[nodiscard]] constexpr
 auto SampleConv(float const val) noexcept -> T
 {
-    if constexpr(std::same_as<T, f32>)
-        return f32{val};
-    else if constexpr(std::same_as<T, i32>)
-    {
-        /* Floats have a 23-bit mantissa, plus an implied 1 bit and a sign bit.
-         * This means a normalized float has at most 25 bits of signed precision.
-         * When scaling and clamping for a signed 32-bit integer, these following
-         * values are the best a float can give.
-         */
-        return i32{fastf2i(std::clamp(val*2147483648.0f, -2147483648.0f, 2147483520.0f))};
-    }
-    else if constexpr(std::same_as<T, i16>)
-    {
-        auto const tmp = std::clamp(val*32768.0f, -32768.0f, 32767.0f);
-        return i16{gsl::narrow_cast<i16::value_t>(fastf2i(tmp))};
-    }
-    else if constexpr(std::same_as<T, i8>)
-        return i8{gsl::narrow_cast<i8::value_t>(fastf2i(std::clamp(val*128.0f, -128.0f, 127.0f)))};
+    if constexpr(std::same_as<T, float>)
+        return val;
+    else if constexpr(std::same_as<T, std::int32_t>)
+        return al::saturating_cast<std::int32_t>(val*2147483648.0f);
+    else if constexpr(std::same_as<T, std::int16_t>)
+        return al::saturating_cast<std::int16_t>(val*32768.0f);
+    else if constexpr(std::same_as<T, std::int8_t>)
+        return al::saturating_cast<std::int8_t>(val*128.0f);
     /* Unsigned output variations use the signed conversions with an offset. */
-    else if constexpr(std::same_as<T, u32>)
-        return SampleConv<i32>(val).reinterpret_as<u32>() + 2147483648_u32;
-    else if constexpr(std::same_as<T, u16>)
-        return SampleConv<i16>(val).reinterpret_as<u16>() + 32768_u16;
-    else if constexpr(std::same_as<T, u8>)
-        return SampleConv<i8>(val).reinterpret_as<u8>() + 128_u8;
+    else if constexpr(std::same_as<T, std::uint32_t>)
+        return static_cast<std::uint32_t>(SampleConv<std::int32_t>(val)) + 2147483648u;
+    else if constexpr(std::same_as<T, std::uint16_t>)
+        return gsl::narrow_cast<std::uint16_t>(SampleConv<std::int16_t>(val) + 32768);
+    else if constexpr(std::same_as<T, std::uint8_t>)
+        return gsl::narrow_cast<std::uint8_t>(SampleConv<std::int8_t>(val) + 128);
     else
     {
         static_assert(al::dependent_false<T>, "Unexpected sample type");

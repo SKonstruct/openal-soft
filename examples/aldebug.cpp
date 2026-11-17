@@ -29,25 +29,26 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
-#include <iostream>
 #include <memory>
 #include <ranges>
 #include <span>
 #include <string_view>
 #include <vector>
 
-#include "alnumeric.h"
-
 #include "win_main_utf8.h"
 
 #if HAVE_CXXMODULES
 import alhelpers;
+import common.std;
 import fmtlib;
 import gsl;
+import numeric;
 import openal;
 import zstring_view;
 
 #else
+
+#include <iostream>
 
 #include "AL/alc.h"
 #include "AL/al.h"
@@ -59,6 +60,7 @@ import zstring_view;
 #include "fmt/ostream.h"
 #include "fmt/std.h"
 #include "gsl/gsl"
+#include "numeric.hpp"
 #endif
 
 namespace {

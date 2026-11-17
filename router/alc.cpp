@@ -16,7 +16,6 @@
 #include <unordered_map>
 
 #include "opthelpers.h"
-#include "strutils.hpp"
 #include "zudl.hpp"
 
 #if HAVE_CXXMODULES
@@ -25,7 +24,7 @@ import alstring;
 import gsl;
 import openal;
 
-#define ALC_APIENTRY __cdecl
+#include "openal_apientry.h"
 
 #else
 
@@ -753,7 +752,7 @@ ALC_API auto ALC_APIENTRY alcIsExtensionPresent(ALCdevice *const device,
     }
 
     auto matchext = [tofind = std::string_view{extname}](std::string_view const entry)
-    { return tofind.size() == entry.size() and is_eq(al::case_compare(tofind, entry)); };
+    { return al::ci_equal(tofind, entry); };
     return std::ranges::any_of(GetExtensionArray(), matchext) ? ALC_TRUE : ALC_FALSE;
 }
 

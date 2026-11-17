@@ -20,39 +20,37 @@
 
 #include "config.h"
 
-#include "buffer.h"
-
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
-#include <numeric>
 #include <optional>
 #include <ranges>
 #include <span>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
-
-#include "AL/al.h"
-#include "AL/alext.h"
 
 #include "alc/inprogext.h"
 #include "almalloc.h"
-#include "alnumeric.h"
 #include "core/except.h"
+#include "core/fmt_traits.h"
 #include "core/resampler_limits.hpp"
-#include "core/voice.h"
+#include "core/storage_formats.h"
 #include "direct_defs.h"
 #include "intrusive_ptr.h"
 #include "opthelpers.h"
+#include "vector.h"
 #include "zudl.hpp"
 
 #if ALSOFT_EAX
@@ -63,24 +61,46 @@
 #endif // ALSOFT_EAX
 
 #if HAVE_CXXMODULES
+/* HACK: GCC 16 has an issue with declaring std::array<al::Buffer, 64> after
+ * the module imports.
+ */
+#if !defined(__clang__) && defined(__GNUC__) && __GNUC__ <= 16
+#include "al/buffer.h"
+namespace {
+    using SubListAllocator = al::allocator<std::array<al::Buffer, 64>>;
+}
+#define BUFFER_SUBLIST_HACK
+#endif
+
+import openal;
+
+import al.iface;
 import alc.context;
 import alc.device;
+import core.voice;
 import format;
 import gsl;
 import logging;
-import types;
+import numeric;
 #else
+#include "AL/al.h"
+#include "AL/alext.h"
+
+#include "al/buffer.h"
 #include "alc/context.hpp"
 #include "alc/device.h"
 #include "alformat.hpp"
-#include "alformattypes.hpp"
 #include "core/logging.h"
+#include "core/voice.h"
 #include "gsl/gsl"
+#include "numeric.hpp"
 #endif
 
 namespace {
 
-using SubListAllocator = al::allocator<std::array<al::Buffer,64>>;
+#if !defined(BUFFER_SUBLIST_HACK)
+using SubListAllocator = al::allocator<std::array<al::Buffer, 64>>;
+#endif
 
 constexpr auto AmbiLayoutFromEnum(ALenum const layout) noexcept -> std::optional<AmbiLayout>
 {
@@ -181,19 +201,19 @@ void eax_x_ram_clear(al::Device& al_device, al::Buffer& al_buffer) noexcept
 #endif // ALSOFT_EAX
 
 
-constexpr auto INVALID_STORAGE_MASK = ~gsl::narrow<ALbitfieldSOFT>(AL_MAP_READ_BIT_SOFT
-    | AL_MAP_WRITE_BIT_SOFT | AL_MAP_PERSISTENT_BIT_SOFT | AL_PRESERVE_DATA_BIT_SOFT);
+constexpr auto INVALID_STORAGE_MASK = ~ALbitfieldSOFT{AL_MAP_READ_BIT_SOFT | AL_MAP_WRITE_BIT_SOFT
+    | AL_MAP_PERSISTENT_BIT_SOFT | AL_PRESERVE_DATA_BIT_SOFT};
 constexpr auto MAP_READ_WRITE_FLAGS = ALbitfieldSOFT{AL_MAP_READ_BIT_SOFT | AL_MAP_WRITE_BIT_SOFT};
-constexpr auto INVALID_MAP_FLAGS = ~gsl::narrow<ALbitfieldSOFT>(AL_MAP_READ_BIT_SOFT
-    | AL_MAP_WRITE_BIT_SOFT | AL_MAP_PERSISTENT_BIT_SOFT);
+constexpr auto INVALID_MAP_FLAGS = ~ALbitfieldSOFT{AL_MAP_READ_BIT_SOFT | AL_MAP_WRITE_BIT_SOFT
+    | AL_MAP_PERSISTENT_BIT_SOFT};
 
 
 [[nodiscard]]
-auto EnsureBuffers(al::Device& device, usize const needed) noexcept -> bool
+auto EnsureBuffers(al::Device& device, std::size_t const needed) noexcept -> bool
 try {
-    auto count = std::accumulate(device.BufferList.cbegin(), device.BufferList.cend(), 0_usize,
-        [](usize const cur, const BufferSubList &sublist) noexcept -> usize
-        { return cur + sublist.mFreeMask.popcount(); });
+    auto count = std::accumulate(device.BufferList.cbegin(), device.BufferList.cend(), 0_uz,
+        [](std::size_t const cur, const BufferSubList &sublist) noexcept -> std::size_t
+        { return cur + as_unsigned(std::popcount(sublist.mFreeMask)); });
 
     while(needed > count)
     {
@@ -201,7 +221,6 @@ try {
             return false;
 
         auto sublist = BufferSubList{};
-        sublist.mFreeMask = ~0_u64;
         sublist.mBuffers = SubListAllocator{}.allocate(1);
         device.BufferList.emplace_back(std::move(sublist));
         count += std::tuple_size_v<SubListAllocator::value_type>;
@@ -218,7 +237,7 @@ auto AllocBuffer(al::Device& device) noexcept -> gsl::not_null<al::Buffer*>
     auto sublist = std::ranges::find_if(device.BufferList,
         [](BufferSubList const &slist) { return slist.mFreeMask != 0; });
     auto lidx = gsl::narrow_cast<ALuint>(std::distance(device.BufferList.begin(), sublist));
-    auto slidx = sublist->mFreeMask.countr_zero().c_val;
+    auto slidx = as_unsigned(std::countr_zero(sublist->mFreeMask));
     ASSUME(slidx < 64);
 
     auto const buffer = gsl::make_not_null(std::construct_at(
@@ -227,7 +246,7 @@ auto AllocBuffer(al::Device& device) noexcept -> gsl::not_null<al::Buffer*>
     /* Add 1 to avoid buffer ID 0. */
     buffer->mId = gsl::narrow_cast<ALuint>((lidx<<6) | slidx) + 1;
 
-    sublist->mFreeMask &= ~(1_u64 << slidx);
+    sublist->mFreeMask &= ~(std::uint64_t{1} << slidx);
 
     return buffer;
 }
@@ -246,7 +265,7 @@ void FreeBuffer(al::Device& device, al::Buffer& buffer)
 
     std::destroy_at(&buffer);
 
-    device.BufferList[lidx].mFreeMask |= 1_u64 << slidx;
+    device.BufferList[lidx].mFreeMask |= std::uint64_t{1} << slidx;
 }
 
 [[nodiscard]]
@@ -259,7 +278,7 @@ auto LookupBuffer(std::nothrow_t, al::Device const& device, ALuint const id) noe
     if(lidx >= device.BufferList.size()) [[unlikely]]
         return nullptr;
     auto &sublist = device.BufferList[lidx];
-    if((sublist.mFreeMask & (1_u64 << slidx)) != 0) [[unlikely]]
+    if((sublist.mFreeMask & (std::uint64_t{1} << slidx)) != 0) [[unlikely]]
         return nullptr;
     return std::to_address(std::next(sublist.mBuffers->begin(), as_signed(slidx)));
 }
@@ -356,7 +375,7 @@ void LoadData(al::Context& context, al::Buffer& ALBuf, ALsizei const freq, ALuin
     if(blocks > std::numeric_limits<ALsizei>::max()/samplesPerBlock)
         context.throw_error(AL_OUT_OF_MEMORY,
             "Buffer size overflow, {} blocks x {} samples per block", blocks, samplesPerBlock);
-    if(blocks > usize::max()/bytesPerBlock)
+    if(blocks > std::numeric_limits<std::size_t>::max()/bytesPerBlock)
         context.throw_error(AL_OUT_OF_MEMORY,
             "Buffer size overflow, {} frames x {} bytes per frame", blocks, bytesPerBlock);
 
@@ -577,7 +596,7 @@ void PrepareUserPtr(al::Context& context [[maybe_unused]], al::Buffer& ALBuf, AL
     if(blocks > std::numeric_limits<ALsizei>::max()/samplesPerBlock)
         context.throw_error(AL_OUT_OF_MEMORY,
             "Buffer size overflow, {} blocks x {} samples per block", blocks, samplesPerBlock);
-    if(blocks > usize::max()/bytesPerBlock)
+    if(blocks > std::numeric_limits<std::size_t>::max()/bytesPerBlock)
         context.throw_error(AL_OUT_OF_MEMORY,
             "Buffer size overflow, {} frames x {} bytes per frame", blocks, bytesPerBlock);
 
@@ -932,15 +951,19 @@ try {
         (albuf.mType == FmtMSADPCM) ? ((align-2u)/2u + 7u) * num_chans :
         (align * albuf.bytesFromFmt() * num_chans);
 
-    if(offset < 0 || length < 0 || usize::from(offset) > albuf.mOriginalSize
-        || usize::from(length) > albuf.mOriginalSize - usize::from(offset))
-        context.throw_error(AL_INVALID_VALUE, "Invalid data sub-range {}+{} on buffer {}", offset,
-            length, buffer);
-    if((usize::from(offset)%byte_align) != 0)
+    if(offset < 0 || length < 0)
+        context.throw_error(AL_INVALID_VALUE, "Invalid data sub-range {} + {} on buffer {}",
+            offset, length, buffer);
+    auto const uoffset = gsl::narrow<std::size_t>(offset);
+    auto const ulength = gsl::narrow<std::size_t>(length);
+    if(uoffset > albuf.mOriginalSize || ulength > albuf.mOriginalSize - uoffset)
+        context.throw_error(AL_INVALID_VALUE, "Invalid data sub-range {} + {} on buffer {}",
+            offset, length, buffer);
+    if((uoffset%byte_align) != 0)
         context.throw_error(AL_INVALID_VALUE,
             "Sub-range offset {} is not a multiple of frame size {} ({} unpack alignment)",
             offset, byte_align, align);
-    if((usize::from(length)%byte_align) != 0)
+    if((ulength%byte_align) != 0)
         context.throw_error(AL_INVALID_VALUE,
             "Sub-range length {} is not a multiple of frame size {} ({} unpack alignment)",
             length, byte_align, align);
@@ -986,13 +1009,17 @@ try {
     if((unavailable&AL_MAP_PERSISTENT_BIT_SOFT))
         context.throw_error(AL_INVALID_VALUE,
             "Mapping buffer {} persistently without persistent access", buffer);
-    if(offset < 0 || length <= 0 || usize::from(offset) >= albuf.mOriginalSize
-        || usize::from(length) > albuf.mOriginalSize - usize::from(offset))
-        context.throw_error(AL_INVALID_VALUE, "Mapping invalid range {}+{} for buffer {}", offset,
-            length, buffer);
+    if(offset < 0 || length <= 0)
+        context.throw_error(AL_INVALID_VALUE, "Mapping invalid range {} + {} for buffer {}",
+            offset, length, buffer);
+    auto const uoffset = gsl::narrow<std::size_t>(offset);
+    if(uoffset >= albuf.mOriginalSize
+        || gsl::narrow<std::size_t>(length) > albuf.mOriginalSize - uoffset)
+        context.throw_error(AL_INVALID_VALUE, "Mapping invalid range {} + {} for buffer {}",
+            offset, length, buffer);
 
-    auto *const retval = std::visit([ptroff=gsl::narrow<std::size_t>(offset)](auto &datavec)
-    { return &std::as_writable_bytes(datavec)[ptroff]; }, albuf.mData);
+    auto *const retval = std::visit([uoffset](auto& datavec)
+    { return &std::as_writable_bytes(datavec)[uoffset]; }, albuf.mData);
     albuf.mMappedAccess = access;
     albuf.mMappedOffset = offset;
     albuf.mMappedSize = length;
@@ -1608,11 +1635,11 @@ try {
         {
             if(!buffer.mEaxXRamIsHardware)
             {
-                if(usize::max() - buffer.mOriginalSize < total_needed)
+                std::size_t newtotal;
+                if(al::ckd_add(&newtotal, buffer.mOriginalSize, total_needed))
                     context.throw_error(AL_OUT_OF_MEMORY, "Size overflow ({} + {})",
                         buffer.mOriginalSize, total_needed);
-
-                total_needed += buffer.mOriginalSize;
+                total_needed = newtotal;
             }
         }
         if(total_needed > device.eax_x_ram_free_size)
@@ -1762,9 +1789,9 @@ BufferSubList::~BufferSubList()
     auto usemask = ~mFreeMask;
     while(usemask != 0)
     {
-        auto const idx = usemask.countr_zero();
-        std::destroy_at(std::to_address(mBuffers->begin() + as_signed(idx.c_val)));
-        usemask &= ~(1_u64 << idx);
+        auto const idx = std::countr_zero(usemask);
+        std::destroy_at(std::to_address(mBuffers->begin() + idx));
+        usemask &= ~(std::uint64_t{1} << as_unsigned(idx));
     }
     mFreeMask = ~usemask;
     SubListAllocator{}.deallocate(mBuffers, 1);

@@ -11,7 +11,7 @@
 #include "api.h"
 #include "core/effects/base.h"
 #include "call.h"
-#include "opthelpers.h"
+#include "opthelper_macros.hpp"
 
 inline bool EaxTraceCommits{false};
 
@@ -362,7 +362,5 @@ public:
     }
 #undef EAXCALL
 }; // EaxEffect
-
-using EaxEffectUPtr = std::unique_ptr<EaxEffect>;
 
 #endif // !EAX_EFFECT_INCLUDED
